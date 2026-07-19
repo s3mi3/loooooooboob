@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Roblox Dex Explorer</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <div class="brand-name">Roblox Dex</div>
+          <div class="brand-sub">External explorer for your own game</div>
+        </div>
+      </div>
+      <div class="status-cluster">
+        <div id="connection-pill" class="pill offline" title="Bridge status">
+          <span class="dot"></span>
+          <span id="connection-text">Waiting for game…</span>
+        </div>
+        <button id="btn-refresh" class="btn" type="button" title="Refresh services">Refresh</button>
+      </div>
+    </header>
+
+    <section class="toolbar">
+      <label class="search-wrap">
+        <span class="sr-only">Search</span>
+        <input id="search-input" type="search" placeholder="Search instances by name or class…" autocomplete="off" />
+      </label>
+      <div class="path-bar">
+        <span class="path-label">Path</span>
+        <code id="selected-path">—</code>
+        <button id="btn-copy-path" class="btn btn-ghost" type="button" disabled>Copy</button>
+      </div>
+    </section>
+
+    <main class="workspace">
+      <aside class="panel tree-panel">
+        <div class="panel-head">
+          <h2>Explorer</h2>
+          <span id="tree-meta" class="muted"></span>
+        </div>
+        <div id="tree" class="tree" role="tree" aria-label="DataModel explorer"></div>
+        <div id="tree-empty" class="empty-state">
+          <p>No game connected.</p>
+          <ol>
+            <li>Run this app (<code>python main.py</code>)</li>
+            <li>Add <code>roblox/DexBridge.server.lua</code> to ServerScriptService</li>
+            <li>Paste the auth token from Setup below</li>
+            <li>Enable HttpService and press Play</li>
+          </ol>
+        </div>
+      </aside>
+
+      <section class="panel props-panel">
+        <div class="panel-head">
+          <h2>Properties</h2>
+          <span id="props-meta" class="muted"></span>
+        </div>
+        <div id="props" class="props"></div>
+        <div id="props-empty" class="empty-state subtle">
+          Select an instance to inspect properties.
+        </div>
+      </section>
+
+      <aside class="panel setup-panel">
+        <div class="panel-head">
+          <h2>Setup</h2>
+        </div>
+        <div class="setup-body">
+          <label>
+            Auth token
+            <div class="token-row">
+              <input id="auth-token" type="text" readonly />
+              <button id="btn-copy-token" class="btn" type="button">Copy</button>
+            </div>
+          </label>
+          <label>
+            Bridge URL
+            <input id="bridge-url" type="text" readonly />
+          </label>
+          <p class="muted setup-note">
+            This tool only works with games you control. The bridge script must be present in your place — there is no process injection or memory reading.
+          </p>
+          <div id="session-list" class="session-list"></div>
+          <div id="log" class="log" aria-live="polite"></div>
+        </div>
+      </aside>
+    </main>
+  </div>
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>
