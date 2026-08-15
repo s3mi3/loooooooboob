@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "BetterSnap — Deleted Message Logger",
+  "version": "13.0.0",
+  "description": "Logs Snapchat messages that get deleted — including deletions in chats you are NOT currently viewing.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://web.snapchat.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://web.snapchat.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}
