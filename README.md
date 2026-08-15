@@ -35,10 +35,18 @@ Each captured entry records the friend/row name as its `context`. Entries are de
 
 ## Debugging / tuning
 
-Snapchat's DOM is obfuscated and changes over time. Two tools help you verify the sidebar parsing against the live page:
+Snapchat's DOM is obfuscated and changes over time, and its exact "deleted" wording varies by account/version. Tools to verify parsing against the live page:
 
+- **Diagnose button** (in the log panel) — the easiest option. Delete a test message, open the panel, and click **Diagnose**. It renders, inside the panel, everything the detector currently sees:
+  - every element whose text contains `delet…`, tagged `[MATCH]` or `[NO-MATCH]` so you can see if the tombstone wording is being recognized,
+  - the tombstone count and message-candidate count,
+  - each sidebar row's parsed friend name / preview / tombstone flag.
+
+  Any `[NO-MATCH]` line reveals wording the detector is missing — that's the string to fix `TOMBSTONE` / `SIDEBAR_DELETED_RE` with.
 - Toggle **Debug: ON** in the panel (or set `localStorage.bettersnap_dml_debug = '1'`) to log detection activity to the console.
-- Run `__bettersnap_diagnoseSidebar()` in the page console to print every conversation row the detector sees, along with the friend name, preview, and whether it currently reads as a tombstone. Use this to confirm rows/names are parsed correctly, or to adjust the selectors/regexes in `content.js` if Snapchat changes its UI:
+- Note: MV3 content scripts run in an isolated world, so `__bettersnap_diagnose()` / `__bettersnap_diagnoseSidebar()` are only reachable if you switch the DevTools console's context to the extension's content script. The in-panel **Diagnose** button avoids this entirely.
+
+Adjust these in `content.js` if Snapchat changes its UI:
   - `ROW_SELECTOR` — how conversation rows are found.
   - `SIDEBAR_DELETED_RE` — the deletion phrase.
   - `looksLikeFriendName` / `getRowFriendName` — how the row's friend name is extracted.

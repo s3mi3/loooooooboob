@@ -38,9 +38,14 @@
   const POLL_MS      = 500;
   const MEDIA_CAP    = 200;
 
-  // The gold signal: Snapchat's own tombstone text.
-  const TOMBSTONE = /(DELETED A (?:CHAT|SNAP|MESSAGE))|(\bmessage deleted\b)/i;
+  // The gold signal: Snapchat's own tombstone text. Kept intentionally broad
+  // because Snapchat's exact wording varies ("You deleted a chat", "Deleted",
+  // "This message was deleted", etc.). Any standalone "deleted" counts.
+  const TOMBSTONE =
+    /\b(?:deleted\s+(?:a|the|this)\s+(?:chat|snap|message)|(?:chat|snap|message)\s+(?:was\s+)?deleted|(?:you|they)\s+deleted|deleted)\b/i;
   const isTombstone = (t) => !!t && TOMBSTONE.test(t);
+  // Loose substring used only for diagnostics / discovery.
+  const DELETED_HINT = /delet/i;
 
   let DEBUG = false;
   try { DEBUG = localStorage.getItem(DEBUG_KEY) === '1'; } catch (_) {}
@@ -181,7 +186,8 @@
     const body = document.body;
     if (!body) return 0;
     const text = body.innerText || body.textContent || '';
-    const m = text.match(/DELETED A (?:CHAT|SNAP|MESSAGE)/gi);
+    const m = text.match(
+      /\b(?:deleted\s+(?:a|the|this)\s+(?:chat|snap|message)|(?:chat|snap|message)\s+(?:was\s+)?deleted|(?:you|they)\s+deleted|deleted)\b/gi);
     return m ? m.length : 0;
   }
 
@@ -733,6 +739,62 @@
     return rows.length;
   };
 
+  /**
+   * Collect every on-page element whose own text mentions "delet…", along with
+   * whether our matcher recognizes it. This is the ground-truth view of what
+   * Snapchat actually renders when something is deleted — use it to confirm/fix
+   * the TOMBSTONE / SIDEBAR_DELETED_RE patterns.
+   */
+  function collectDeletedLikeElements() {
+    const out = [];
+    if (!document.body) return out;
+    const seen = new Set();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, null);
+    for (let el = walker.nextNode(); el; el = walker.nextNode()) {
+      if (el.closest && el.closest('#bettersnap-dml-panel, #bettersnap-dml-pill')) continue;
+      const t = ownText(el);
+      if (!t || t.length > 160) continue;
+      if (!DELETED_HINT.test(t)) continue;
+      if (seen.has(t)) continue;
+      seen.add(t);
+      out.push({
+        text: t,
+        tag: el.tagName.toLowerCase(),
+        matchedTombstone: TOMBSTONE.test(t),
+        matchedSidebar: SIDEBAR_DELETED_RE.test(t),
+      });
+    }
+    return out;
+  }
+
+  function buildDiagnostics() {
+    const rows = collectConversationRows();
+    return {
+      version: 'v13',
+      running: true,
+      url: location.href,
+      openChat: conversationLabel() || '(none)',
+      tombstoneCount: countTombstones(),
+      msgCandidates: findMessageTexts().length,
+      sidebarRows: rows.length,
+      trackedFriends: friendPreviewCache.size,
+      capturedTotal: '(open panel count)',
+      rows: rows.slice(0, 40).map((r) => ({
+        friend: getRowFriendName(r) || '(none)',
+        preview: getRowPreviewText(r) || '(none)',
+        tomb: SIDEBAR_DELETED_RE.test(r.textContent || ''),
+        text: (r.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+      })),
+      deletedLike: collectDeletedLikeElements(),
+    };
+  }
+
+  window.__bettersnap_diagnose = () => {
+    const d = buildDiagnostics();
+    console.log(TAG, 'DIAGNOSTICS', d);
+    return d;
+  };
+
   function start() {
     if (!document.body) { requestAnimationFrame(start); return; }
     mediaObserver.observe(document.body, {
@@ -846,9 +908,15 @@
     styleSmallBtn(clearBtn);
     clearBtn.onclick = () => { saveList([], () => { bumpBadge(0); panel.remove(); }); };
 
+    const diagBtn = document.createElement('button');
+    diagBtn.textContent = 'Diagnose';
+    styleSmallBtn(diagBtn);
+    diagBtn.onclick = () => renderDiagnostics(panel);
+
     btnRow.appendChild(debugBtn);
     btnRow.appendChild(exportBtn);
     btnRow.appendChild(clearBtn);
+    btnRow.appendChild(diagBtn);
     header.appendChild(btnRow);
     panel.appendChild(header);
 
@@ -869,6 +937,54 @@
       }
     }
     document.body.appendChild(panel);
+  }
+
+  function renderDiagnostics(panel) {
+    let box = panel.querySelector('#bs-dml-diag');
+    if (box) box.remove();
+    box = document.createElement('div');
+    box.id = 'bs-dml-diag';
+    box.style.cssText =
+      'margin:8px 0;padding:8px;background:#101010;border:1px solid #333;' +
+      'border-radius:8px;font-size:11px;line-height:1.5;white-space:pre-wrap;' +
+      'word-break:break-word;max-height:40vh;overflow:auto;';
+    const d = buildDiagnostics();
+
+    const lines = [];
+    lines.push('BetterSnap ' + d.version + ' — running: ' + d.running);
+    lines.push('open chat: ' + d.openChat);
+    lines.push('tombstoneCount (matched): ' + d.tombstoneCount);
+    lines.push('message candidates: ' + d.msgCandidates);
+    lines.push('sidebar rows: ' + d.sidebarRows + '   tracked friends: ' + d.trackedFriends);
+    lines.push('');
+    lines.push('== Elements containing "delet" (' + d.deletedLike.length + ') ==');
+    if (!d.deletedLike.length) {
+      lines.push('  (none found — delete a message, then click Diagnose again)');
+    } else {
+      d.deletedLike.forEach((e) => {
+        const flag = e.matchedTombstone ? '[MATCH]' : '[NO-MATCH]';
+        lines.push('  ' + flag + ' <' + e.tag + '> ' + JSON.stringify(e.text));
+      });
+    }
+    lines.push('');
+    lines.push('== Sidebar rows (first ' + d.rows.length + ') ==');
+    d.rows.forEach((r, i) => {
+      lines.push('  #' + i + ' friend=' + JSON.stringify(r.friend) +
+        ' tomb=' + r.tomb + ' preview=' + JSON.stringify(r.preview));
+    });
+
+    box.textContent = lines.join('\n');
+
+    const hint = document.createElement('div');
+    hint.style.cssText = 'font-size:11px;opacity:.6;margin-top:6px;';
+    hint.textContent = 'Tip: delete a test message, then click Diagnose. ' +
+      'Any [NO-MATCH] line under "delet" shows wording the detector is missing — ' +
+      'send that text to fix detection.';
+    box.appendChild(hint);
+
+    // Insert right under the header/info area.
+    panel.appendChild(box);
+    box.scrollIntoView({ block: 'nearest' });
   }
 
   function styleSmallBtn(b) {
