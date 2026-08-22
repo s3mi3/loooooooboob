@@ -39,9 +39,9 @@
 namespace rbx {
 
 namespace off {
-    // theo's offsets - version-d584fb6c717a43d9 (dumped 06/08/2026)
-    constexpr uintptr_t FakeDataModel_Ptr    = 0x8A5D748; // 145086280
-    constexpr uintptr_t FakeDataModel_RealDM = 0x1D0;     // 464
+    // theo's offsets - version-ddf602d9cfe44005 (dumped 11/08/2026)
+    constexpr uintptr_t FakeDataModel_Ptr    = 0x8B79B58; // 146250584 (RVA from module base)
+    constexpr uintptr_t FakeDataModel_RealDM = 0x1D8;     // 472
     // Instance layout (2026 Roblox: Name lives inside a NameContainer object).
     //   NameContainer = *(Instance + 0x70)
     //   name string   = NameContainer + 0x08
@@ -640,19 +640,19 @@ static void draw_props(uintptr_t inst, const std::string& className) {
     };
 
     if (isPart()) {
-        rowF("Reflectance",   inst, 0xcc);
-        rowF("Transparency",  inst, 0xd0);
-        rowB("CastShadow",    inst, 0xd5);
-        rowB("Locked",        inst, 0xd6);
-        rowB("Massless",      inst, 0xd7);
-        rowI("Shape",         inst, 0x159);
+        rowF("Reflectance",   inst, 0x10c);
+        rowF("Transparency",  inst, 0x130);
+        rowB("CastShadow",    inst, 0x135);
+        rowB("Locked",        inst, 0x136);
+        rowB("Massless",      inst, 0x137);
+        rowI("Shape",         inst, 0x1b9);
         uintptr_t prim = 0;
-        if (rbx::R(inst + 0x128, prim) && prim) {
-            snprintf(b, 64, "0x%llX", (unsigned long long)prim); row("Primitive", "0x128", b);
+        if (rbx::R(inst + 0x188, prim) && prim) {
+            snprintf(b, 64, "0x%llX", (unsigned long long)prim); row("Primitive", "0x188", b);
             rowV3("Position",               prim, 0xec);
             rowV3("AssemblyLinearVelocity", prim, 0xf8);
             rowV3("AssemblyAngularVelocity",prim, 0x104);
-            rowV3("Size",                   prim, 0x1b8);
+            rowV3("Size",                   prim, 0x1bc);
             uint8_t flags = 0;
             if (rbx::R(prim + 0x1b6, flags)) {
                 row("Anchored",   "0x1B6:b1", (flags & 0x02) ? "true" : "false");
@@ -668,12 +668,12 @@ static void draw_props(uintptr_t inst, const std::string& className) {
         rowF  ("FieldOfView",   inst, 0x140);
         rowAddr("CameraSubject",inst, 0xc8);
         float vx=0, vy=0;
-        if (rbx::R(inst + 0x2c8, vx) && rbx::R(inst + 0x2c8 + 4, vy)) {
-            snprintf(b, 64, "%.1f, %.1f", vx, vy); row("ViewportSize", "0x2C8", b);
+        if (rbx::R(inst + 0x2cc, vx) && rbx::R(inst + 0x2cc + 4, vy)) {
+            snprintf(b, 64, "%.1f, %.1f", vx, vy); row("ViewportSize", "0x2CC", b);
         }
     }
     if (is("Humanoid")) {
-        rowF ("Health",           inst, 0x188);
+        rowF ("Health",           inst, 0x190);
         rowF ("MaxHealth",        inst, 0x1a8);
         rowF ("WalkSpeed",        inst, 0x1d0);
         rowF ("JumpPower",        inst, 0x1a4);
@@ -700,15 +700,15 @@ static void draw_props(uintptr_t inst, const std::string& className) {
         rowI   ("UserId",                inst, 0x300);
         rowI   ("AccountAge",            inst, 0x35c);
         rowI   ("CameraMode",            inst, 0x370);
-        rowI   ("TeamColor",             inst, 0x3ac);
+        rowI   ("TeamColor",             inst, 0x3b0);
         rowF   ("MinZoomDistance",       inst, 0x36c);
-        rowF   ("HealthDisplayDistance", inst, 0x390);
-        rowF   ("NameDisplayDistance",   inst, 0x3a0);
+        rowF   ("HealthDisplayDistance", inst, 0x394);
+        rowF   ("NameDisplayDistance",   inst, 0x3a4);
         rowAddr("Character",             inst, 0x298);
         rowAddr("Team",                  inst, 0x2d8);
     }
     if (is("Model"))    { rowF("Scale", inst, 0x144); rowAddr("PrimaryPart", inst, 0x258); }
-    if (is("Workspace")){ rowAddr("CurrentCamera", inst, 0x488); rowD("DistributedGameTime", inst, 0x4a8); rowF("Gravity", inst, 0x998); }
+    if (is("Workspace")){ rowAddr("CurrentCamera", inst, 0x498); rowD("DistributedGameTime", inst, 0x4b8); rowF("Gravity", inst, 0x9c0); }
     if (is("Lighting")) {
         rowF ("Brightness",           inst, 0x110);
         rowF ("ClockTime",            inst, 0x1a8);
