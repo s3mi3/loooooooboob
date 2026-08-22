@@ -26,6 +26,8 @@
 #include <d3d11.h>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
+#include <cctype>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -53,6 +55,7 @@ namespace off {
     constexpr uintptr_t Inst_ChildrenStart   = 0x78;      // 120
     constexpr uintptr_t Inst_Parent          = 0x68;      // 104
     constexpr uintptr_t Players_LocalPlayer  = 0x130;     // 304 (on Players service)
+    constexpr uintptr_t Player_DisplayName   = 0x138;     // 312 (on Player)
     // GuiBase2D / GuiObject
     constexpr uintptr_t Gui_AbsolutePosition = 0x10C;     // Vector2
     constexpr uintptr_t Gui_AbsoluteSize     = 0x114;     // Vector2
@@ -248,6 +251,18 @@ static std::string strip_rich(std::string s) {
     for (char c : s) { if (c == '<') tag = true; else if (c == '>') tag = false; else if (!tag) o.push_back(c); }
     return o;
 }
+// Normalise a name for matching: drop rich-text, drop bracketed clan tags
+// like "[WRST]"/"(x)", drop spaces, lowercase.
+static std::string norm_name(std::string s) {
+    s = strip_rich(s);
+    std::string o; bool br = false;
+    for (char c : s) {
+        if (c == '[' || c == '(' || c == '{') br = true;
+        else if (c == ']' || c == ')' || c == '}') br = false;
+        else if (!br && c != ' ') o.push_back((char)tolower((unsigned char)c));
+    }
+    return o;
+}
 static double parse_mass(const std::string& s) {
     if (s.empty()) return 0;
     double n = 0; double mul = 1; std::string digits;
@@ -261,15 +276,18 @@ static double parse_mass(const std::string& s) {
 }
 
 // Read all cells + viruses for this frame.
-static void read_world(std::vector<Cell>& cells, std::vector<Virus>& viruses, Cell** me) {
-    *me = nullptr;
+static void read_world(std::vector<Cell>& cells, std::vector<Virus>& viruses) {
     uintptr_t players = rbx::find_child(rbx::g_dm, "Players");
     if (!players) return;
     uintptr_t lp = 0;
     rbx::R(players + rbx::off::Players_LocalPlayer, lp);
     if (!lp) return;
 
-    std::string myName = g_ownName[0] ? std::string(g_ownName) : rbx::get_name(lp);
+    // Match own cells by the local player's name. Prefer a manual override,
+    // then DisplayName, then username. Normalised (clan tags/spaces stripped).
+    std::string myRaw = g_ownName[0] ? std::string(g_ownName) : rbx::rstr_prop(lp + rbx::off::Player_DisplayName);
+    if (myRaw.empty()) myRaw = rbx::get_name(lp);
+    std::string myN = norm_name(myRaw);
 
     uintptr_t pg     = rbx::find_child(lp, "PlayerGui");
     uintptr_t screen = rbx::find_child(pg, "Agaric2D");
@@ -297,11 +315,9 @@ static void read_world(std::vector<Cell>& cells, std::vector<Virus>& viruses, Ce
         uintptr_t nl = rbx::find_child(f, "NameLabel");
         c.mass = ml ? parse_mass(rbx::rstr_prop(ml + rbx::off::Gui_Text)) : 0;
         c.name = nl ? strip_rich(rbx::rstr_prop(nl + rbx::off::Gui_Text)) : std::string();
-        c.own  = (!myName.empty() && c.name == myName);
+        c.own  = (!myN.empty() && norm_name(c.name) == myN);
         cells.push_back(std::move(c));
     }
-    // pick "me": name match (largest) else largest near screen centre handled by caller
-    for (auto& c : cells) if (c.own && (!*me || c.r > (*me)->r)) *me = &c;
 
     viruses.reserve(spikes.size());
     for (uintptr_t f : spikes) {
@@ -331,16 +347,20 @@ static void draw_star(ImDrawList* dl, float cx, float cy, float rout, ImU32 col)
 
 static void render_esp(float ow, float oh) {
     if (!g_cfg.enabled) return;
-    std::vector<Cell> cells; std::vector<Virus> viruses; Cell* me = nullptr;
-    read_world(cells, viruses, &me);
+    std::vector<Cell> cells; std::vector<Virus> viruses;
+    read_world(cells, viruses);
 
-    // Fallback "you" = largest cell nearest screen centre.
+    // "me": largest name-matched own cell. If none matched, fall back to the
+    // cell nearest the exact screen centre (the camera is centred on you) --
+    // pure distance, NOT weighted by size, so a big nearby enemy isn't chosen.
+    Cell* me = nullptr;
+    for (auto& c : cells) if (c.own && (!me || c.r > me->r)) me = &c;
     if (!me && !cells.empty()) {
-        float best = -1e9f, ccx = ow * 0.5f, ccy = oh * 0.5f;
+        float best = 1e18f, ccx = ow * 0.5f, ccy = oh * 0.5f;
         for (auto& c : cells) {
             float dx = c.x - ccx, dy = c.y - ccy;
-            float s = c.r - sqrtf(dx * dx + dy * dy) * 0.15f;
-            if (s > best) { best = s; me = &c; }
+            float d = dx * dx + dy * dy;
+            if (d < best) { best = d; me = &c; }
         }
         if (me) me->own = true;
     }
@@ -404,7 +424,7 @@ static ID3D11DeviceContext*    g_ctx = nullptr;
 static IDXGISwapChain*         g_sc  = nullptr;
 static ID3D11RenderTargetView* g_rtv = nullptr;
 static HWND                    g_hwnd = nullptr;
-static bool                    g_clickThrough = true;
+static bool                    g_menuOpen = false;   // INSERT-toggled settings/interaction
 
 static void CreateRTV() {
     ID3D11Texture2D* bb = nullptr;
@@ -469,11 +489,22 @@ static HWND find_roblox_window() {
     return f.best;
 }
 
-static void set_click_through(bool on) {
+// Menu open  = interactive (mouse + keyboard reach ImGui, window focused).
+// Menu closed = click-through, non-activating (input passes to Roblox).
+static void apply_menu_state() {
     LONG ex = GetWindowLong(g_hwnd, GWL_EXSTYLE);
-    if (on) ex |= WS_EX_TRANSPARENT; else ex &= ~WS_EX_TRANSPARENT;
-    SetWindowLong(g_hwnd, GWL_EXSTYLE, ex);
-    g_clickThrough = on;
+    if (g_menuOpen) {
+        ex &= ~WS_EX_TRANSPARENT;
+        ex &= ~WS_EX_NOACTIVATE;
+        SetWindowLong(g_hwnd, GWL_EXSTYLE, ex);
+        SetForegroundWindow(g_hwnd);
+        SetActiveWindow(g_hwnd);
+        SetFocus(g_hwnd);
+    } else {
+        ex |= WS_EX_TRANSPARENT;
+        ex |= WS_EX_NOACTIVATE;
+        SetWindowLong(g_hwnd, GWL_EXSTYLE, ex);
+    }
 }
 
 static void settings_window() {
@@ -539,7 +570,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
         // INSERT toggles interactive settings / click-through.
         bool insDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
-        if (insDown && !prevInsert) set_click_through(!g_clickThrough);
+        if (insDown && !prevInsert) { g_menuOpen = !g_menuOpen; apply_menu_state(); }
         prevInsert = insDown;
 
         // (Re)attach to Roblox as needed.
@@ -569,7 +600,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         ImGui::NewFrame();
 
         if (rbx::g_dm) render_esp((float)curW, (float)curH);
-        if (!g_clickThrough) settings_window();
+        if (g_menuOpen) settings_window();
 
         ImGui::Render();
         const float clear[4] = { 0, 0, 0, 0 }; // black = color-keyed transparent
