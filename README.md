@@ -17,38 +17,47 @@ An awareness / ESP overlay for an Agar.io-style Roblox game, written for the
 Toggle/tune everything live from the **AgarESP** menu tab. **INSERT** toggles
 the overlay.
 
-### How it works (this was tuned to a real place file)
+### How it works (reverse-engineered from real place files)
 
-The reference game (**Agar2D**) is a **2D** Roblox game — cells are *not* 3D
-parts, they're circular GUI `Frame`s drawn into a ScreenGui:
+These Agar-style Roblox games render cells as **2D GUI circles**, not 3D parts,
+so the script reads the on-screen circle Frames directly. It auto-detects the
+layout via presets:
+
+**`Agaric`** (ScreenGui `Agaric2D`) — the live game this was tuned to:
 
 ```
-PlayerGui > Agar2DScreen > Root > World > (circle Frames)
+PlayerGui > Agaric2D > Camera > Canvas > LayerBottom/LayerMain > (entity frames)
 ```
 
-So the script reads the on-screen circles directly. Each cell circle exposes:
+- Cells = Frames named **`PlayerBlob`** (child `Visual` ImageLabel = colour,
+  `NameLabel`/`MassLabel` = text).
+- Viruses = ImageLabels named **`Spike`**.
+- The `Camera` frame is centred and `UIScale`d, so screen pixels are read from
+  **`AbsolutePosition`/`AbsoluteSize`** (with a render-scale fallback via the
+  `Camera`'s `UIScale`).
 
-- `Position` offset → its centre on screen (px)
-- `Size` offset → its diameter on screen (px)
-- `BackgroundColor3` → its colour (viruses are RGB `138,207,0`)
-- `LabelStack.ScoreLabel.Text` → its exact mass
-- `LabelStack.NameLabel.Text` → the player's name
+**`Agar2D`** (ScreenGui `Agar2DScreen`) — an alternative template:
 
-From mass the script recovers the world scale (`radius = 0.632·√mass`), so
-distances and rings can be shown in real studs and the split reach is the
-game-accurate `0.632·√mass + 700·clamp((10000/mass)^0.28, 0.22, 1) / 1.9`.
+- Cells = circle Frames under `Root > World` that have a numeric `ScoreLabel`.
+- Viruses = circles coloured RGB `138,207,0`.
+- `World` is fullscreen, so the `Position`/`Size` offsets are already screen px.
+
+**`3D`** — fallback for a 3D Agar game: `entity.GetPlayers()` + Workspace parts
+via `draw.WorldToScreen`.
+
+Classification is name-based where possible (robust), threats use the on-screen
+radius ratio from the `Eat mass ratio` slider (default 125 % → √1.25 radius
+ratio), and viruses are tagged `DANGER` when you're big enough to pop one.
 
 ### Modes (`General → Mode`)
 
-- **Auto** – use 2D GUI mode if the ScreenGui is found, else 3D. *Default.*
-- **2D GUI** – force the GUI-circle reader.
-- **3D parts** – fallback for a 3D Agar game: reads `entity.GetPlayers()` and
-  Workspace parts via `draw.WorldToScreen`.
+- **Auto** – try Agaric, then Agar2D, else 3D. *Default.*
+- **Agaric** / **Agar2D** / **3D parts** – force a specific preset.
 
 ### If your build differs
 
-Every tunable (ScreenGui name via the `CFG` block, virus colour, eat ratio,
-split reach scale, your name) is adjustable. **Debug → Dump GUI** prints the
-circle tree plus a raw `Position`/`Size` sample to the console so you can see
-exactly how your build is laid out and adjust `CFG.gui_screen` / `CFG.gui_path`
-if the names differ.
+Presets live in the `PRESETS` table at the top of the script (ScreenGui name,
+container path, cell/virus frame names, label paths). **Debug → Dump GUI**
+prints the resolved container plus a sample frame's `AbsolutePosition` /
+`Position` / `Size` so you can confirm the layout and adjust the preset if a
+future update renames things.
