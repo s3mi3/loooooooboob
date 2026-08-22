@@ -61,12 +61,21 @@ namespace off {
     constexpr uintptr_t Gui_AbsoluteSize     = 0x114;     // Vector2
     constexpr uintptr_t Gui_Visible          = 0x5AD;     // bool
     constexpr uintptr_t Gui_Text             = 0xDF8;     // string (Text*)
+    // TaskScheduler (for tickrate/FPS). Raising MaxFPS makes the client loop
+    // run faster -> the common Roblox "speed/tickrate" method.
+    constexpr uintptr_t TaskScheduler_Ptr    = 0x88B64C8; // 143353032 (RVA)
+    constexpr uintptr_t TS_MaxFPS            = 0xB0;      // 176 (double frame cap)
+    constexpr uintptr_t TS_JobStart          = 0xC8;      // 200 (job ptr array begin)
+    constexpr uintptr_t TS_JobEnd            = 0xD0;      // 208 (job ptr array end)
+    constexpr uintptr_t Job_Name             = 0x18;      // 24  (std::string in a job)
 }
 
-static HANDLE    g_hProc = nullptr;
-static uintptr_t g_base  = 0;
-static uintptr_t g_dm    = 0;
-static const char* PROC  = "RobloxPlayerBeta.exe";
+static HANDLE    g_hProc  = nullptr;
+static uintptr_t g_base   = 0;
+static uintptr_t g_dm     = 0;
+static DWORD     g_pid    = 0;
+static bool      g_canWrite = false;
+static const char* PROC   = "RobloxPlayerBeta.exe";
 
 struct V2 { float x, y; };
 
@@ -78,6 +87,10 @@ template<typename T> static inline bool R(uintptr_t a, T& v) {
 static bool rbytes(uintptr_t a, void* o, size_t n) {
     if (!g_hProc || !a) return false; SIZE_T rd = 0;
     return ReadProcessMemory(g_hProc, (LPCVOID)a, o, n, &rd) && rd == n;
+}
+template<typename T> static inline bool W(uintptr_t a, const T& v) {
+    if (!g_hProc || !a || !g_canWrite) return false; SIZE_T wr = 0;
+    return WriteProcessMemory(g_hProc, (LPVOID)a, &v, sizeof(T), &wr) && wr == sizeof(T);
 }
 // MSVC std::string (SSO) reader.
 static std::string rstr(uintptr_t addr) {
@@ -175,6 +188,7 @@ static bool attach() {
         CloseHandle(snap);
     }
     if (!pid) return false;
+    g_pid = pid;
     g_hProc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!g_hProc) return false;
     // module base
@@ -196,7 +210,21 @@ static bool attach() {
 }
 static void detach() {
     if (g_hProc) { CloseHandle(g_hProc); g_hProc = nullptr; }
-    g_base = 0; g_dm = 0;
+    g_base = 0; g_dm = 0; g_canWrite = false;
+}
+// Opt-in: reopen the handle with write access. Returns true on success.
+static bool enable_writes() {
+    if (g_canWrite) return true;
+    if (!g_pid) return false;
+    HANDLE h = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION |
+                           PROCESS_QUERY_LIMITED_INFORMATION, FALSE, g_pid);
+    if (!h) return false;
+    if (g_hProc) CloseHandle(g_hProc);
+    g_hProc = h; g_canWrite = true;
+    return true;
+}
+static uintptr_t task_scheduler() {
+    uintptr_t ts = 0; R(g_base + off::TaskScheduler_Ptr, ts); return ts;
 }
 static bool alive() {
     if (!g_hProc) return false;
@@ -246,6 +274,9 @@ struct Config {
     // Display
     float ui_scale      = 1.0f;
     bool  auto_scale    = true;  // scale markers/text with your on-screen size
+    // Speed / tickrate (requires opt-in memory write mode)
+    bool  tick_on       = false;
+    float tick_mult     = 1.0f;  // writes MaxFPS = 60 * tick_mult
     ImVec4 col_line   = ImVec4(1, 1, 1, 0.30f);
     ImVec4 col_threat = ImVec4(1, 0.15f, 0.15f, 1);
     ImVec4 col_prey   = ImVec4(0.30f, 1, 0.40f, 1);
@@ -641,6 +672,25 @@ static void apply_menu_state() {
     }
 }
 
+static std::vector<std::string> g_jobNames;
+static const char* g_writeMsg = "";
+static void scan_jobs() {
+    g_jobNames.clear();
+    uintptr_t ts = rbx::task_scheduler();
+    if (!ts) { g_jobNames.push_back("(scheduler not found)"); return; }
+    uintptr_t s = 0, e = 0;
+    rbx::R(ts + rbx::off::TS_JobStart, s);
+    rbx::R(ts + rbx::off::TS_JobEnd, e);
+    if (!s || e <= s) { g_jobNames.push_back("(no jobs / bad offset)"); return; }
+    size_t n = (e - s) / 8; if (n > 512) n = 512;
+    for (size_t i = 0; i < n; ++i) {
+        uintptr_t job = 0;
+        if (!rbx::R(s + i * 8, job) || !job) continue;
+        std::string nm = rbx::rstr_prop(job + rbx::off::Job_Name);
+        if (!nm.empty()) g_jobNames.push_back(nm);
+    }
+}
+
 static void settings_window() {
     ImGui::SetNextWindowBgAlpha(0.85f);
     ImGui::Begin("Agaric ESP  (INSERT to hide)", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
@@ -690,6 +740,24 @@ static void settings_window() {
     ImGui::Text("Taps '%c' while '%c' held. Server may cap the rate.",
                 (char)g_cfg.eject_key, (char)g_cfg.hold_key);
 
+    ImGui::SeparatorText("Speed / Tickrate (memory writes)");
+    if (!rbx::g_canWrite) {
+        if (ImGui::Button("Enable memory writes"))
+            g_writeMsg = rbx::enable_writes() ? "write mode ON" : "OpenProcess(WRITE) failed (Hyperion?)";
+        ImGui::SameLine(); ImGui::TextDisabled("%s", g_writeMsg);
+    } else {
+        ImGui::TextDisabled("write mode ON");
+        ImGui::Checkbox("Tickrate multiplier", &g_cfg.tick_on);
+        ImGui::SliderFloat("Multiplier", &g_cfg.tick_mult, 1.0f, 10.0f, "%.1fx");
+        ImGui::Text("Writes MaxFPS = 60 x mult. Server-auth games may cap the effect.");
+    }
+    if (ImGui::Button("List scheduler jobs")) scan_jobs();
+    if (!g_jobNames.empty()) {
+        ImGui::BeginChild("jobs", ImVec2(0, 110), true);
+        for (auto& n : g_jobNames) ImGui::TextUnformatted(n.c_str());
+        ImGui::EndChild();
+    }
+
     ImGui::SeparatorText("Display");
     ImGui::Checkbox("Auto-scale with my size", &g_cfg.auto_scale);
     ImGui::SliderFloat("UI scale", &g_cfg.ui_scale, 0.6f, 2.5f, "%.2f");
@@ -736,6 +804,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         prevInsert = insDown;
 
         run_macros(g_menuOpen);
+
+        // Tickrate: periodically re-write MaxFPS (the game may reset it).
+        if (rbx::g_canWrite && g_cfg.tick_on) {
+            static ULONGLONG lastTick = 0; ULONGLONG now = GetTickCount64();
+            if (now - lastTick > 400) {
+                lastTick = now;
+                uintptr_t ts = rbx::task_scheduler();
+                if (ts) rbx::W<double>(ts + rbx::off::TS_MaxFPS, 60.0 * g_cfg.tick_mult);
+            }
+        }
 
         // (Re)attach to Roblox as needed.
         if (!rbx::alive()) rbx::detach();
