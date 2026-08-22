@@ -238,6 +238,11 @@ struct Config {
     bool  merge_on      = true;
     float merge_seconds = 15.0f; // recombine time (calibrate to your game)
     int   split_key     = VK_SPACE;
+    // Input macro (experimental; input simulation only, no memory writes)
+    bool  macro_eject   = false; // while hold_key is down, tap eject_key at eject_hz
+    int   hold_key      = 'W';   // key you hold to trigger the macro
+    int   eject_key     = 'W';   // key the macro taps (the game's eject/feed key)
+    int   eject_hz      = 15;    // taps per second
     // Display
     float ui_scale      = 1.0f;
     bool  auto_scale    = true;  // scale markers/text with your on-screen size
@@ -596,6 +601,28 @@ static HWND find_roblox_window() {
     return f.best;
 }
 
+// Send a virtual-key press to the foreground window (Roblox).
+static void tap_key(WORD vk) {
+    INPUT in[2] = {};
+    in[0].type = INPUT_KEYBOARD; in[0].ki.wVk = vk;
+    in[1].type = INPUT_KEYBOARD; in[1].ki.wVk = vk; in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, in, sizeof(INPUT));
+}
+
+// Auto-eject: while hold_key is held, tap eject_key at eject_hz.
+// Skipped while the settings menu is open so it never fights your typing.
+static void run_macros(bool menuOpen) {
+    if (!g_cfg.macro_eject || menuOpen) return;
+    if (!(GetAsyncKeyState(g_cfg.hold_key) & 0x8000)) return;
+    static ULONGLONG lastMs = 0;
+    ULONGLONG now = GetTickCount64();
+    int hz = g_cfg.eject_hz < 1 ? 1 : g_cfg.eject_hz;
+    if (now - lastMs >= (ULONGLONG)(1000 / hz)) {
+        lastMs = now;
+        tap_key((WORD)g_cfg.eject_key);
+    }
+}
+
 // Menu open  = interactive (mouse + keyboard reach ImGui, window focused).
 // Menu closed = click-through, non-activating (input passes to Roblox).
 static void apply_menu_state() {
@@ -657,6 +684,12 @@ static void settings_window() {
     ImGui::SliderFloat("Merge time (s)", &g_cfg.merge_seconds, 1.0f, 60.0f, "%.1f");
     ImGui::Text("(starts on Space / when your cell count rises)");
 
+    ImGui::SeparatorText("Auto-eject macro (experimental)");
+    ImGui::Checkbox("Enable auto-eject (hold W)", &g_cfg.macro_eject);
+    ImGui::SliderInt("Eject rate (Hz)", &g_cfg.eject_hz, 3, 30, "%d");
+    ImGui::Text("Taps '%c' while '%c' held. Server may cap the rate.",
+                (char)g_cfg.eject_key, (char)g_cfg.hold_key);
+
     ImGui::SeparatorText("Display");
     ImGui::Checkbox("Auto-scale with my size", &g_cfg.auto_scale);
     ImGui::SliderFloat("UI scale", &g_cfg.ui_scale, 0.6f, 2.5f, "%.2f");
@@ -701,6 +734,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         bool insDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
         if (insDown && !prevInsert) { g_menuOpen = !g_menuOpen; apply_menu_state(); }
         prevInsert = insDown;
+
+        run_macros(g_menuOpen);
 
         // (Re)attach to Roblox as needed.
         if (!rbx::alive()) rbx::detach();
