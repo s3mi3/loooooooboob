@@ -213,25 +213,45 @@ struct Virus { float x, y, r; };
 
 struct Config {
     bool enabled       = true;
-    bool dist_lines    = true;
-    bool dist_text     = true;
-    bool threat_on     = true;
-    bool threat_only   = false;
-    bool threat_ring   = true;
-    bool virus_on      = true;
-    bool virus_tag     = true;
-    bool split_self    = true;
-    bool split_threats = true;
-    float eat_ratio    = 1.25f;  // mass ratio to be eaten
-    float split_mult   = 6.0f;   // reach = radius * split_mult (px)
-    ImVec4 col_line   = ImVec4(1, 1, 1, 0.35f);
+    // Distance: 0=All, 1=Threats only, 2=Off  (default Threats to cut clutter)
+    int   line_mode    = 1;
+    int   label_mode   = 1;
+    float max_dist     = 0;      // px cull for lines/labels (0 = no cull)
+    // Threat
+    bool  threat_on    = true;
+    bool  threat_ring  = true;
+    bool  threat_offscreen = true;
+    bool  proximity_alert  = true;
+    float eat_ratio    = 1.25f;  // mass ratio needed to eat
+    // Virus
+    bool  virus_on     = true;
+    bool  virus_tag    = true;
+    bool  virus_offscreen = true;
+    float virus_min_px = 14.0f;  // viruses never drawn smaller than this
+    // Offense
+    bool  eat_targets  = true;   // mark prey you could split-eat
+    // Split range
+    bool  split_self    = true;
+    bool  split_threats = true;
+    float split_mult    = 6.0f;  // reach = radius * split_mult (px)
+    // Merge timer
+    bool  merge_on      = true;
+    float merge_seconds = 15.0f; // recombine time (calibrate to your game)
+    int   split_key     = VK_SPACE;
+    // Display
+    float ui_scale      = 1.0f;
+    bool  auto_scale    = true;  // scale markers/text with your on-screen size
+    ImVec4 col_line   = ImVec4(1, 1, 1, 0.30f);
     ImVec4 col_threat = ImVec4(1, 0.15f, 0.15f, 1);
     ImVec4 col_prey   = ImVec4(0.30f, 1, 0.40f, 1);
     ImVec4 col_virus  = ImVec4(0.54f, 0.81f, 0, 1);
     ImVec4 col_split  = ImVec4(1, 0.55f, 0.10f, 0.6f);
+    ImVec4 col_target = ImVec4(0.2f, 0.9f, 1, 1);
 } g_cfg;
 
-static char g_ownName[128] = "";  // optional manual override
+static char   g_ownName[128] = "";     // optional manual override
+static int    g_prevOwn   = 0;         // merge-timer: previous own-cell count
+static double g_lastSplit = -1e9;      // merge-timer: time of last split
 
 // Walk Canvas subtree collecting PlayerBlob / Spike frames.
 static void walk(uintptr_t node, int depth, std::vector<uintptr_t>& blobs, std::vector<uintptr_t>& spikes) {
@@ -335,14 +355,48 @@ static void read_world(std::vector<Cell>& cells, std::vector<Virus>& viruses) {
 // ---------------------------------------------------------------------------
 // Rendering (ImGui background draw list, overlay-local = client px)
 // ---------------------------------------------------------------------------
-static void draw_star(ImDrawList* dl, float cx, float cy, float rout, ImU32 col) {
+static void draw_star(ImDrawList* dl, float cx, float cy, float rout, ImU32 col, float th) {
     const int pts = 12; ImVec2 poly[pts * 2];
     for (int i = 0; i < pts * 2; ++i) {
         float ang = (float)i / (pts * 2) * 6.2831853f - 1.5707963f;
         float rr = (i & 1) ? rout * 0.55f : rout;
         poly[i] = ImVec2(cx + cosf(ang) * rr, cy + sinf(ang) * rr);
     }
-    dl->AddPolyline(poly, pts * 2, col, ImDrawFlags_Closed, 2.0f);
+    dl->AddPolyline(poly, pts * 2, col, ImDrawFlags_Closed, th);
+}
+
+// Centred text, scaled by ui_scale.
+static void dtext(ImDrawList* dl, float cx, float top, const char* s, ImU32 col, float sc) {
+    ImVec2 ts = ImGui::CalcTextSize(s);
+    dl->AddText(ImGui::GetFont(), 14.0f * sc, ImVec2(cx - ts.x * sc * 0.5f, top), col, s);
+}
+
+// Arrow at the screen edge pointing toward an off-screen target.
+static void offscreen_arrow(ImDrawList* dl, float tx, float ty, float ow, float oh,
+                            ImU32 col, float sc, float dist) {
+    float m = 26.0f * sc, cx = ow * 0.5f, cy = oh * 0.5f;
+    float dx = tx - cx, dy = ty - cy;
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 1.0f) return;
+    dx /= len; dy /= len;
+    float minX = m, maxX = ow - m, minY = m, maxY = oh - m;
+    float tX = (dx > 0) ? (maxX - cx) / dx : (dx < 0 ? (minX - cx) / dx : 1e18f);
+    float tY = (dy > 0) ? (maxY - cy) / dy : (dy < 0 ? (minY - cy) / dy : 1e18f);
+    float t = tX < tY ? tX : tY;
+    float px = cx + dx * t, py = cy + dy * t;
+    float s = 11.0f * sc, perpx = -dy, perpy = dx;
+    ImVec2 tip(px + dx * s, py + dy * s);
+    ImVec2 b1(px + perpx * s * 0.7f, py + perpy * s * 0.7f);
+    ImVec2 b2(px - perpx * s * 0.7f, py - perpy * s * 0.7f);
+    dl->AddTriangleFilled(tip, b1, b2, col);
+    if (dist > 0) {
+        char buf[16]; snprintf(buf, sizeof(buf), "%d", (int)(dist + 0.5f));
+        dtext(dl, px - dx * 14 * sc, py - dy * 14 * sc - 7 * sc, buf, col, sc);
+    }
+}
+
+static inline bool on_screen(float x, float y, float ow, float oh) {
+    return x >= 0 && x <= ow && y >= 0 && y <= oh;
 }
 
 static void render_esp(float ow, float oh) {
@@ -354,21 +408,36 @@ static void render_esp(float ow, float oh) {
     // cell nearest the exact screen centre (the camera is centred on you) --
     // pure distance, NOT weighted by size, so a big nearby enemy isn't chosen.
     Cell* me = nullptr;
-    for (auto& c : cells) if (c.own && (!me || c.r > me->r)) me = &c;
+    int ownCount = 0;
+    for (auto& c : cells) if (c.own) { ownCount++; if (!me || c.r > me->r) me = &c; }
     if (!me && !cells.empty()) {
         float best = 1e18f, ccx = ow * 0.5f, ccy = oh * 0.5f;
         for (auto& c : cells) {
-            float dx = c.x - ccx, dy = c.y - ccy;
-            float d = dx * dx + dy * dy;
+            float dx = c.x - ccx, dy = c.y - ccy, d = dx * dx + dy * dy;
             if (d < best) { best = d; me = &c; }
         }
-        if (me) me->own = true;
     }
 
     float ax = me ? me->x : ow * 0.5f;
     float ay = me ? me->y : oh * 0.5f;
     float myr = me ? me->r : 0.0f;
     float rratio = sqrtf(g_cfg.eat_ratio);
+    float sc = g_cfg.ui_scale;
+    // Auto-scale ESP element sizes with your on-screen radius so they stay
+    // proportional as you grow and the camera zooms.
+    if (g_cfg.auto_scale && myr > 0) {
+        float k = myr / 40.0f;
+        if (k < 0.7f) k = 0.7f; else if (k > 2.2f) k = 2.2f;
+        sc *= k;
+    }
+
+    // ---- Merge timer bookkeeping (client-side estimate) ------------------
+    double now = ImGui::GetTime();
+    static bool prevSplitKey = false;
+    bool splitKey = (GetAsyncKeyState(g_cfg.split_key) & 0x8000) != 0;
+    if ((splitKey && !prevSplitKey) || ownCount > g_prevOwn) g_lastSplit = now;
+    prevSplitKey = splitKey;
+    g_prevOwn = ownCount;
 
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     const ImU32 cLine   = ImGui::GetColorU32(g_cfg.col_line);
@@ -376,43 +445,81 @@ static void render_esp(float ow, float oh) {
     const ImU32 cPrey   = ImGui::GetColorU32(g_cfg.col_prey);
     const ImU32 cVirus  = ImGui::GetColorU32(g_cfg.col_virus);
     const ImU32 cSplit  = ImGui::GetColorU32(g_cfg.col_split);
+    const ImU32 cTarget = ImGui::GetColorU32(g_cfg.col_target);
 
     if (g_cfg.split_self && myr > 0)
-        dl->AddCircle(ImVec2(ax, ay), myr * g_cfg.split_mult, cSplit, 48, 1.5f);
+        dl->AddCircle(ImVec2(ax, ay), myr * g_cfg.split_mult, cSplit, 48, 1.5f * sc);
+
+    bool inDanger = false;
 
     for (auto& c : cells) {
         if (c.own) continue;
+        float dx = c.x - ax, dy = c.y - ay;
+        float dist = sqrtf(dx * dx + dy * dy);
         bool threat = g_cfg.threat_on && myr > 0 && (c.r >= myr * rratio);
-        if (g_cfg.threat_only && !threat) continue;
+
+        // A threat whose split could reach you == active danger.
+        if (threat && me && dist <= c.r * g_cfg.split_mult + myr) inDanger = true;
+
+        if (!on_screen(c.x, c.y, ow, oh)) {
+            if (threat && g_cfg.threat_offscreen) offscreen_arrow(dl, c.x, c.y, ow, oh, cThreat, sc, dist);
+            continue;
+        }
+
+        bool farCull = (g_cfg.max_dist > 0 && dist > g_cfg.max_dist);
         ImU32 col = threat ? cThreat : cPrey;
 
-        if (g_cfg.dist_lines) dl->AddLine(ImVec2(ax, ay), ImVec2(c.x, c.y), cLine, 1.0f);
-        if (threat) {
-            if (g_cfg.threat_ring) dl->AddCircle(ImVec2(c.x, c.y), c.r > 6 ? c.r : 6, cThreat, 32, 2.0f);
-            if (g_cfg.split_threats) dl->AddCircle(ImVec2(c.x, c.y), c.r * g_cfg.split_mult, cSplit, 40, 1.0f);
-        }
-        dl->AddCircleFilled(ImVec2(c.x, c.y), 2.5f, col, 10);
+        bool drawLine = (g_cfg.line_mode == 0) || (g_cfg.line_mode == 1 && threat);
+        if (drawLine && !farCull) dl->AddLine(ImVec2(ax, ay), ImVec2(c.x, c.y), cLine, 1.0f);
 
-        if (g_cfg.dist_text) {
-            float dx = c.x - ax, dy = c.y - ay;
-            char buf[32]; snprintf(buf, sizeof(buf), "%d", (int)(sqrtf(dx * dx + dy * dy) + 0.5f));
-            ImVec2 ts = ImGui::CalcTextSize(buf);
-            dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - 16), col, buf);
+        if (threat) {
+            if (g_cfg.threat_ring)   dl->AddCircle(ImVec2(c.x, c.y), c.r > 6 ? c.r : 6, cThreat, 32, 2.0f * sc);
+            if (g_cfg.split_threats) dl->AddCircle(ImVec2(c.x, c.y), c.r * g_cfg.split_mult, cSplit, 40, 1.0f);
+        } else if (g_cfg.eat_targets && me && c.r <= myr / rratio && dist <= myr * g_cfg.split_mult) {
+            // Prey you could reach and eat with a split.
+            dl->AddCircle(ImVec2(c.x, c.y), (c.r > 5 ? c.r : 5) + 3 * sc, cTarget, 20, 2.0f * sc);
+        }
+        dl->AddCircleFilled(ImVec2(c.x, c.y), 2.5f * sc, col, 10);
+
+        bool drawLabel = (g_cfg.label_mode == 0) || (g_cfg.label_mode == 1 && threat);
+        if (drawLabel && !farCull) {
+            char buf[24]; snprintf(buf, sizeof(buf), "%d", (int)(dist + 0.5f));
+            dtext(dl, c.x, c.y - 16 * sc, buf, col, sc);
         }
     }
 
     if (g_cfg.virus_on) {
         for (auto& v : viruses) {
-            draw_star(dl, v.x, v.y, v.r > 10 ? v.r : 10, cVirus);
-            dl->AddCircleFilled(ImVec2(v.x, v.y), 2.5f, cVirus, 8);
-            if (g_cfg.virus_tag && myr > 0) {
-                bool danger = myr >= v.r * rratio;
+            bool danger = myr > 0 && myr >= v.r * rratio; // big enough to be popped
+            if (!on_screen(v.x, v.y, ow, oh)) {
+                if (g_cfg.virus_offscreen) offscreen_arrow(dl, v.x, v.y, ow, oh, cVirus, sc, 0);
+                continue;
+            }
+            float rr = v.r > g_cfg.virus_min_px ? v.r : g_cfg.virus_min_px; rr *= sc;
+            draw_star(dl, v.x, v.y, rr, cVirus, 2.0f * sc);
+            dl->AddCircleFilled(ImVec2(v.x, v.y), 2.5f * sc, cVirus, 8);
+            if (g_cfg.virus_tag) {
                 const char* t = danger ? "DANGER" : "SAFE";
                 ImU32 tc = danger ? IM_COL32(255, 50, 50, 255) : IM_COL32(150, 230, 150, 255);
-                ImVec2 ts = ImGui::CalcTextSize(t);
-                dl->AddText(ImVec2(v.x - ts.x * 0.5f, v.y - (v.r > 10 ? v.r : 10) - 14), tc, t);
+                dtext(dl, v.x, v.y - rr - 14 * sc, t, tc, sc);
             }
         }
+    }
+
+    // ---- Merge timer readout (above your cell) ---------------------------
+    if (g_cfg.merge_on && me && ownCount > 1) {
+        double rem = g_cfg.merge_seconds - (now - g_lastSplit);
+        char buf[32];
+        ImU32 tc;
+        if (rem > 0) { snprintf(buf, sizeof(buf), "MERGE %.1fs", rem); tc = IM_COL32(255, 210, 90, 255); }
+        else         { snprintf(buf, sizeof(buf), "CAN MERGE");        tc = IM_COL32(120, 255, 120, 255); }
+        dtext(dl, ax, ay + myr + 4 * sc, buf, tc, sc);
+    }
+
+    // ---- Split-danger proximity alert ------------------------------------
+    if (g_cfg.proximity_alert && inDanger) {
+        dl->AddRect(ImVec2(2, 2), ImVec2(ow - 2, oh - 2), IM_COL32(255, 40, 40, 220), 0, 0, 4.0f);
+        dtext(dl, ow * 0.5f, 8, "!! SPLIT DANGER !!", IM_COL32(255, 60, 60, 255), sc * 1.3f);
     }
 }
 
@@ -512,26 +619,48 @@ static void settings_window() {
     ImGui::Begin("Agaric ESP  (INSERT to hide)", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::Checkbox("Enabled", &g_cfg.enabled);
     ImGui::InputText("Your name (blank=auto)", g_ownName, sizeof(g_ownName));
-    ImGui::SeparatorText("Distance");
-    ImGui::Checkbox("Lines", &g_cfg.dist_lines); ImGui::SameLine();
-    ImGui::Checkbox("Numbers", &g_cfg.dist_text);
+
+    ImGui::SeparatorText("Distance / clutter");
+    ImGui::Combo("Lines",  &g_cfg.line_mode,  "All\0Threats only\0Off\0");
+    ImGui::Combo("Labels", &g_cfg.label_mode, "All\0Threats only\0Off\0");
+    ImGui::SliderFloat("Max distance (px, 0=all)", &g_cfg.max_dist, 0.0f, 2000.0f, "%.0f");
     ImGui::ColorEdit4("Line col", &g_cfg.col_line.x, ImGuiColorEditFlags_NoInputs);
+
     ImGui::SeparatorText("Threat");
     ImGui::Checkbox("Highlight", &g_cfg.threat_on); ImGui::SameLine();
-    ImGui::Checkbox("Only threats", &g_cfg.threat_only); ImGui::SameLine();
-    ImGui::Checkbox("Ring", &g_cfg.threat_ring);
+    ImGui::Checkbox("Ring", &g_cfg.threat_ring); ImGui::SameLine();
+    ImGui::Checkbox("Off-screen arrows##t", &g_cfg.threat_offscreen);
+    ImGui::Checkbox("Split-danger alert", &g_cfg.proximity_alert);
     ImGui::SliderFloat("Eat mass ratio", &g_cfg.eat_ratio, 1.0f, 2.0f, "%.2f");
     ImGui::ColorEdit4("Threat col", &g_cfg.col_threat.x, ImGuiColorEditFlags_NoInputs); ImGui::SameLine();
     ImGui::ColorEdit4("Prey col", &g_cfg.col_prey.x, ImGuiColorEditFlags_NoInputs);
+
     ImGui::SeparatorText("Virus");
-    ImGui::Checkbox("Show viruses", &g_cfg.virus_on); ImGui::SameLine();
-    ImGui::Checkbox("DANGER/SAFE tag", &g_cfg.virus_tag);
+    ImGui::Checkbox("Show", &g_cfg.virus_on); ImGui::SameLine();
+    ImGui::Checkbox("Tag", &g_cfg.virus_tag); ImGui::SameLine();
+    ImGui::Checkbox("Off-screen arrows##v", &g_cfg.virus_offscreen);
+    ImGui::SliderFloat("Min size (px)", &g_cfg.virus_min_px, 6.0f, 40.0f, "%.0f");
     ImGui::ColorEdit4("Virus col", &g_cfg.col_virus.x, ImGuiColorEditFlags_NoInputs);
+
+    ImGui::SeparatorText("Offense");
+    ImGui::Checkbox("Mark split-eat targets", &g_cfg.eat_targets);
+    ImGui::ColorEdit4("Target col", &g_cfg.col_target.x, ImGuiColorEditFlags_NoInputs);
+
     ImGui::SeparatorText("Split range");
     ImGui::Checkbox("My reach", &g_cfg.split_self); ImGui::SameLine();
     ImGui::Checkbox("Threat reach", &g_cfg.split_threats);
     ImGui::SliderFloat("Reach x radius", &g_cfg.split_mult, 1.0f, 15.0f, "%.1f");
     ImGui::ColorEdit4("Reach col", &g_cfg.col_split.x, ImGuiColorEditFlags_NoInputs);
+
+    ImGui::SeparatorText("Merge timer");
+    ImGui::Checkbox("Show merge timer", &g_cfg.merge_on);
+    ImGui::SliderFloat("Merge time (s)", &g_cfg.merge_seconds, 1.0f, 60.0f, "%.1f");
+    ImGui::Text("(starts on Space / when your cell count rises)");
+
+    ImGui::SeparatorText("Display");
+    ImGui::Checkbox("Auto-scale with my size", &g_cfg.auto_scale);
+    ImGui::SliderFloat("UI scale", &g_cfg.ui_scale, 0.6f, 2.5f, "%.2f");
+
     ImGui::Separator();
     ImGui::TextDisabled(rbx::g_dm ? "attached  DM=0x%llX" : "waiting for Roblox...",
                         (unsigned long long)rbx::g_dm);
