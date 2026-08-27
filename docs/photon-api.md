@@ -96,6 +96,12 @@ hook.remove(name, id)
 menu_active()
 is_gamefocused()
 get_unixtime()
+
+-- append_watermark: return a string; Photon appends it to the existing
+-- top-right bar (photon v6.9 | name | ping | fps | time).
+hook.add("append_watermark", "id", function()
+    return "MERGE 3.2s"
+end)
 ```
 
 ## Types

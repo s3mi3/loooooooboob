@@ -1,16 +1,23 @@
--- Small Agaric ESP for Photon
--- Name box, ESP toggle, Insert hides the window. Merge cooldown stays on screen.
+-- Agaric ESP for Photon
+-- Type your in-game blob nick (not the Roblox / Photon name).
+-- Insert hides the panel. Merge cooldown stays on Photon's watermark
+-- and as a large banner at the top of the screen.
 
 local MENU = "ESP"
 local SCAN_CAP = 800
 local WIN_X, WIN_Y = 16, 16
-local WIN_W, WIN_H = 188, 92
+local WIN_W, WIN_H = 340, 210
+local BANNER_SIZE = 32
+local MASS_SIZE = 18
 
 pcall(function()
     gui.remove(MENU)
 end)
 pcall(function()
     hook.remove("render", "agaric_esp")
+end)
+pcall(function()
+    hook.remove("append_watermark", "agaric_merge")
 end)
 
 local function ok(inst)
@@ -90,9 +97,13 @@ local function has(hay, needle)
     end
     hay = tostring(hay)
     needle = tostring(needle)
+    if string and string.lower then
+        hay = string.lower(hay)
+        needle = string.lower(needle)
+    end
     local n = #needle
     if n == 0 then
-        return true
+        return false
     end
     local i = 1
     while i + n - 1 <= #hay do
@@ -209,19 +220,35 @@ local function fmt1(n)
     return tostring(w) .. "." .. tostring(f)
 end
 
+local function screen()
+    local sx, sy = 1920, 1080
+    pcall(function()
+        local s = get_screen_size()
+        if s ~= nil and s.x ~= nil then
+            sx, sy = s.x, s.y
+        end
+    end)
+    return sx, sy
+end
+
 local menu = gui.create(MENU, true)
 menu:set_pos(WIN_X, WIN_Y)
 menu:set_size(WIN_W, WIN_H)
 
-local namebox = menu:add_textbox("Name")
+local namebox = menu:add_textbox("In-game name")
 local enabled = menu:add_checkbox("ESP", true)
 local hidebind = menu:add_keybind("Hide", 0x2D)
+local status = menu:add_label("type blob nick, not Roblox name")
 
 local hidden = false
 local prev_hide = false
-local name_seeded = false
 local last_own = 0
 local split_at = 0
+local watermark = "type nick"
+
+hook.add("append_watermark", "agaric_merge", function()
+    return watermark
+end)
 
 local function typed_name()
     local t = nil
@@ -230,8 +257,15 @@ local function typed_name()
     end)
     if t ~= nil then
         t = tostring(t)
-        if t ~= "" then
-            return t
+        local i, j = 1, #t
+        while i <= j and t:sub(i, i) == " " do
+            i = i + 1
+        end
+        while j >= i and t:sub(j, j) == " " do
+            j = j - 1
+        end
+        if j >= i then
+            return t:sub(i, j)
         end
     end
     return nil
@@ -267,10 +301,12 @@ local function pgui()
     return nil
 end
 
+-- Typed nick is the blob NameLabel (e.g. "Superman zohan8"), not Photon/Roblox name.
+-- OwnerUid is used only when the box is empty.
 local function mine(blob, player, who)
     local label = text_of(child(blob, "NameLabel"))
-    if who ~= nil and label ~= nil and has(label, who) then
-        return true
+    if who ~= nil then
+        return label ~= nil and has(label, who)
     end
     if not player then
         return false
@@ -281,15 +317,6 @@ local function mine(blob, player, who)
         owner = blob:get_attribute("OwnerUid", 6)
     end)
     if owner ~= nil and tostring(owner) == uid then
-        return true
-    end
-    if label == nil then
-        return false
-    end
-    if has(label, player.name) then
-        return true
-    end
-    if player.display_name ~= nil and has(label, player.display_name) then
         return true
     end
     return false
@@ -306,17 +333,30 @@ local function set_hidden(on)
     end
 end
 
-local function draw_merge(text, col, x, y)
-    local sx, sy = 40, 8
+local function set_status(text)
+    watermark = text
     pcall(function()
-        local s = get_screen_size()
-        sx = s.x * 0.5 - 36
-        sy = 10
+        status:set_label(text)
     end)
-    render.add_text(vector2(sx, sy), text, col, 18, true)
-    if x ~= nil then
-        render.add_text(vector2(x - 28, y - 22), text, col, 14, true)
+end
+
+local function draw_banner(text, col)
+    local sw = screen()
+    local tw = #text * BANNER_SIZE * 0.58
+    local x = (sw - tw) * 0.5
+    if x < 12 then
+        x = 12
     end
+    local y = 10
+    pcall(function()
+        render.add_rect_filled(
+            vector2(x - 20, y - 6),
+            vector2(x + tw + 20, y + BANNER_SIZE + 10),
+            color(0, 0, 0, 0.7),
+            8
+        )
+    end)
+    render.add_text(vector2(x, y), text, col, BANNER_SIZE, true)
 end
 
 hook.add("render", "agaric_esp", function()
@@ -331,19 +371,6 @@ hook.add("render", "agaric_esp", function()
         prev_hide = down
 
         local player = lp()
-        if not name_seeded and player ~= nil then
-            local seed = player.name
-            if seed == nil or seed == "" then
-                seed = player.display_name
-            end
-            if seed ~= nil and seed ~= "" then
-                pcall(function()
-                    ui.setvalue(MENU, "Name", tostring(seed))
-                end)
-                name_seeded = true
-            end
-        end
-
         local who = typed_name()
         local esp_on = enabled:get_value()
         local pg = pgui()
@@ -355,9 +382,8 @@ hook.add("render", "agaric_esp", function()
             end
         end
 
-        local own_n = 0
+        local own = {}
         local biggest = 0
-        local ox, oy, orad = nil, nil, nil
         local spikes = {}
         local others = {}
 
@@ -384,12 +410,9 @@ hook.add("render", "agaric_esp", function()
                 end
                 local score = digits(text_of(child(inst, "MassLabel")))
                 if mine(inst, player, who) then
-                    own_n = own_n + 1
-                    if score ~= nil and score >= biggest then
+                    own[#own + 1] = { x = x, y = y, r = r, score = score }
+                    if score ~= nil and score > biggest then
                         biggest = score
-                        ox, oy, orad = x, y, r
-                    elseif ox == nil then
-                        ox, oy, orad = x, y, r
                     end
                 else
                     others[#others + 1] = { x = x, y = y, r = r, score = score }
@@ -397,6 +420,7 @@ hook.add("render", "agaric_esp", function()
             end)
         end
 
+        local own_n = #own
         local now = get_tickcount()
         if own_n > last_own then
             split_at = now
@@ -410,13 +434,16 @@ hook.add("render", "agaric_esp", function()
             local i = 1
             while i <= #spikes do
                 local s = spikes[i]
-                render.add_circle(vector2(s.x, s.y), s.r, color(0.55, 0.85, 0.1, 0.9))
+                local pos = vector2(s.x, s.y)
+                -- viruses: thick red rings (not green)
+                render.add_ngon(pos, s.r, color(1, 0.08, 0.08, 1), 20, 5)
+                render.add_ngon(pos, s.r + 6, color(1, 0.2, 0.12, 0.9), 20, 2)
                 i = i + 1
             end
             i = 1
             while i <= #others do
                 local c = others[i]
-                local col = color(1, 1, 1, 0.4)
+                local col = color(1, 1, 1, 0.45)
                 if c.score ~= nil and biggest > 0 then
                     if c.score >= biggest * 1.25 then
                         col = color(1, 0.22, 0.22, 0.95)
@@ -424,37 +451,62 @@ hook.add("render", "agaric_esp", function()
                         col = color(0.25, 1, 0.35, 0.95)
                     end
                 end
-                render.add_circle(vector2(c.x, c.y), c.r, col)
+                render.add_ngon(vector2(c.x, c.y), c.r, col, 24, 3)
                 if c.score ~= nil then
-                    render.add_text(vector2(c.x - 10, c.y + c.r + 1), tostring(c.score), col, 12, true)
+                    local t = tostring(c.score)
+                    render.add_text(vector2(c.x - #t * 5, c.y + c.r + 2), t, col, MASS_SIZE, true)
                 end
                 i = i + 1
             end
-            if ox ~= nil then
-                render.add_circle(vector2(ox, oy), orad, color(0.35, 0.85, 1, 0.95))
-            end
         end
 
-        if own_n > 1 and split_at > 0 then
-            local delay = merge_delay(biggest)
-            local left = delay - (now - split_at) / 1000
-            local col = color(1, 0.82, 0.35, 1)
-            local text = "CAN MERGE"
-            if left > 0 then
-                text = "MERGE " .. fmt1(left) .. "s"
-            else
-                col = color(0.4, 1, 0.5, 1)
-            end
-            draw_merge(text, col, ox, oy)
+        local i = 1
+        while i <= own_n do
+            local m = own[i]
+            render.add_ngon(vector2(m.x, m.y), m.r + 4, color(0.2, 1, 0.4, 1), 28, 4)
+            i = i + 1
         end
+
+        local banner = "TYPE IN-GAME NAME"
+        local col = color(1, 0.85, 0.35, 1)
+        if own_n == 0 then
+            if who == nil then
+                banner = "TYPE IN-GAME NAME"
+                set_status("type nick")
+            else
+                banner = "NO CELLS"
+                col = color(1, 0.45, 0.35, 1)
+                set_status("no cells")
+            end
+        elseif own_n == 1 then
+            banner = "1 CELL"
+            col = color(0.85, 0.85, 0.85, 1)
+            set_status("1 cell")
+        elseif split_at > 0 then
+            local left = merge_delay(biggest) - (now - split_at) / 1000
+            if left > 0 then
+                banner = "MERGE " .. fmt1(left) .. "s"
+                col = color(1, 0.82, 0.3, 1)
+            else
+                banner = "CAN MERGE"
+                col = color(0.35, 1, 0.45, 1)
+            end
+            set_status(banner)
+        else
+            banner = tostring(own_n) .. " CELLS"
+            col = color(0.7, 0.9, 1, 1)
+            set_status(banner)
+        end
+
+        draw_banner(banner, col)
     end)
 
     if not pass then
         pcall(function()
-            render.add_text(vector2(12, 8), tostring(err), color(1, 0.3, 0.3, 1), 13, true)
+            render.add_text(vector2(12, 8), tostring(err), color(1, 0.3, 0.3, 1), 18, true)
         end)
     end
 end)
 
-log.add("ESP: type your in-game name. Insert hides the window. Merge timer stays on screen.", color(0.4, 0.8, 1, 1))
+log.add("ESP: type your in-game nick. Insert hides the panel. Merge cooldown is on Photon's watermark and the top banner.", color(0.4, 0.8, 1, 1))
 log.notification("ESP loaded", "success")
