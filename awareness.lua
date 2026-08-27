@@ -111,13 +111,83 @@ local function geom(inst)
     if not pass or pos == nil or size == nil then
         return nil
     end
-    local w, h = pos.x, pos.y
-    -- size may be vector2
     local sx, sy = size.x, size.y
     if sx == nil or sy == nil or sx < 8 or sy < 8 then
         return nil
     end
     return pos.x + sx * 0.5, pos.y + sy * 0.5, (sx < sy and sx or sy) * 0.5
+end
+
+local function kids_of(inst)
+    local list = nil
+    pcall(function()
+        list = inst:get_children()
+    end)
+    if list == nil then
+        pcall(function()
+            list = inst:GetChildren()
+        end)
+    end
+    return list
+end
+
+local function each(list, fn)
+    if list == nil then
+        return
+    end
+    local n = 0
+    pcall(function()
+        n = #list
+    end)
+    if n > 0 then
+        local i = 1
+        while i <= n do
+            fn(list[i])
+            i = i + 1
+        end
+        return
+    end
+    local used = false
+    pcall(function()
+        for _, v in pairs(list) do
+            used = true
+            fn(v)
+        end
+    end)
+    if used then
+        return
+    end
+    local i = 0
+    while i < 400 do
+        local v = nil
+        pcall(function()
+            v = list[i]
+        end)
+        if v == nil then
+            if i > 0 then
+                break
+            end
+        else
+            fn(v)
+        end
+        i = i + 1
+    end
+end
+
+local function walk(root, fn)
+    local n = 0
+    local function rec(inst, depth)
+        if n >= SCAN_CAP or depth > 14 or not ok(inst) then
+            return
+        end
+        n = n + 1
+        fn(inst)
+        each(kids_of(inst), function(ch)
+            rec(ch, depth + 1)
+        end)
+    end
+    rec(root, 0)
+    return n
 end
 
 local function round_or(n)
@@ -231,71 +301,57 @@ hook.add("render", "agaric_esp", function()
 
         local canvas = desc(root, "Canvas")
         if not canvas then
-            canvas = root
+            canvas = child(root, "Camera")
         end
-
-        local list = nil
-        pcall(function()
-            list = canvas:get_descendants()
-        end)
-        if type(list) ~= "table" then
-            status:set_label("Agaric2D found, get_descendants failed")
-            return
+        if not canvas then
+            canvas = root
         end
 
         local player = lp()
         blob_n = 0
         spike_n = 0
         own_n = 0
-        local scanned = 0
         local biggest = 0
-        local mx, my, mr = 0, 0, 0
-
-        for _, inst in pairs(list) do
-            scanned = scanned + 1
-            if scanned > SCAN_CAP then
-                break
+        local visited = walk(canvas, function(inst)
+            local nm = inst.name
+            if nm ~= "Spike" and nm ~= "PlayerBlob" then
+                return
             end
-            if ok(inst) then
-                local nm = inst.name
-                if nm == "Spike" or nm == "PlayerBlob" then
-                    local x, y, r = geom(inst)
-                    if x ~= nil then
-                        if nm == "Spike" then
-                            spike_n = spike_n + 1
-                            render.add_circle(vector2(x, y), r, color(0.55, 0.85, 0.1, 0.95))
-                        else
-                            blob_n = blob_n + 1
-                            local mass = digits(text_of(child(inst, "MassLabel")))
-                            local is_own = mine(inst, player)
-                            local col = color(1, 1, 1, 0.45)
-                            if is_own then
-                                own_n = own_n + 1
-                                col = color(0.35, 0.8, 1, 0.95)
-                                if mass ~= nil and mass >= biggest then
-                                    biggest = mass
-                                    mx, my, mr = x, y, r
-                                end
-                            elseif mass ~= nil and biggest > 0 then
-                                if mass * 10 >= biggest * 10 * 1.25 then
-                                    col = color(1, 0.2, 0.2, 0.95)
-                                elseif biggest * 10 >= mass * 10 * 1.25 then
-                                    col = color(0.2, 1, 0.35, 0.95)
-                                end
-                            end
-                            render.add_circle(vector2(x, y), r, col)
-                            if mass ~= nil then
-                                render.add_text(vector2(x - 10, y + r + 2), tostring(mass), col, 12, true)
-                            end
-                        end
-                    end
+            local x, y, r = geom(inst)
+            if x == nil then
+                return
+            end
+            if nm == "Spike" then
+                spike_n = spike_n + 1
+                render.add_circle(vector2(x, y), r, color(0.55, 0.85, 0.1, 0.95))
+                return
+            end
+            blob_n = blob_n + 1
+            local mass = digits(text_of(child(inst, "MassLabel")))
+            local is_own = mine(inst, player)
+            local col = color(1, 1, 1, 0.45)
+            if is_own then
+                own_n = own_n + 1
+                col = color(0.35, 0.8, 1, 0.95)
+                if mass ~= nil and mass >= biggest then
+                    biggest = mass
+                end
+            elseif mass ~= nil and biggest > 0 then
+                if mass >= biggest * 1.25 then
+                    col = color(1, 0.2, 0.2, 0.95)
+                elseif biggest >= mass * 1.25 then
+                    col = color(0.2, 1, 0.35, 0.95)
                 end
             end
-        end
+            render.add_circle(vector2(x, y), r, col)
+            if mass ~= nil then
+                render.add_text(vector2(x - 10, y + r + 2), tostring(mass), col, 12, true)
+            end
+        end)
 
-        local line = "Agaric2D  blobs " .. tostring(blob_n) .. "  yours " .. tostring(own_n) .. "  spikes " .. tostring(spike_n)
-        if screen ~= nil then
-            line = line .. "  scr " .. tostring(round_or(screen.x)) .. "x" .. tostring(round_or(screen.y))
+        local line = "walk " .. tostring(visited) .. "  blobs " .. tostring(blob_n) .. "  yours " .. tostring(own_n) .. "  spikes " .. tostring(spike_n)
+        if blob_n == 0 and visited <= 1 then
+            line = "Agaric2D ok, get_children empty (" .. tostring(visited) .. ")"
         end
         status:set_label(line)
         last_err = "ok"
