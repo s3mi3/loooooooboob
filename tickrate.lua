@@ -1,29 +1,34 @@
--- Photon client FPS / tickrate
+-- Photon client FPS cap
 -- API: https://photon-4.gitbook.io/api
 --
--- Agaric does not use Workspace physics. Photon's set_tickrate() only
--- changes Heartbeat, so it does nothing in this game.
+-- Agaric will not get faster from this. ClientPrediction uses RenderStepped
+-- delta time and the server owns speed. Tickrate / FPS only changes how
+-- often the client draws and sends input.
 --
--- The loop that actually runs Agaric (ClientPrediction, World_Move,
--- Input_Target) is RunService.RenderStepped, which follows the Roblox
--- TaskScheduler FPS cap: FFlag TaskSchedulerTargetFps.
+-- Photon's set_tickrate() is Workspace Heartbeat (no-op here).
+-- Runtime FFlags often do not stick. Externals write TaskScheduler MaxFPS.
 
 local MENU_NAME = "Tickrate"
 local DEFAULT_FPS = 60
 local MIN_FPS = 30
 local MAX_FPS = 360
 local PRESETS = { "60", "90", "120", "144", "240", "360" }
-local REAPPLY_MS = 400
+local REAPPLY_MS = 250
+
+-- Pointer RVAs (module base + RVA). Stale across Roblox updates.
+local TS_PTR_RVAS = {
+    0x89E0618, -- jonah dumper version-17d504d2c9544583
+    0x88B64C8, -- photon overlay / offsets site
+    0x7B68F00,
+    0x6829508
+}
+
+local FPS_OFFS = { 0xB0, 0x1B0, 0xA8, 0xC0, 0x108 }
 
 local FPS_FLAGS = {
     "TaskSchedulerTargetFps",
     "DFIntTaskSchedulerTargetFps",
     "FIntTaskSchedulerTargetFps"
-}
-
-local LIMIT_FLAGS = {
-    "TaskSchedulerLimitTargetFpsTo2402",
-    "DFFlagTaskSchedulerLimitTargetFpsTo2402"
 }
 
 local function round(n)
@@ -54,79 +59,77 @@ local function preset_index_for(rate)
     return nil
 end
 
-local function flag_int(name)
-    if type(get_fflag_value) ~= "function" then
+local function as_addr(v)
+    if type(v) == "number" then
+        return v
+    end
+    if v == nil then
         return nil
     end
-    local v = get_fflag_value(name)
-    if type(v) == "number" then
+    if type(v) == "table" or type(v) == "userdata" then
+        if v.address ~= nil then
+            local n = tonumber(v.address)
+            if n then
+                return n
+            end
+        end
+        if v.identity ~= nil then
+            local n = tonumber(v.identity)
+            if n then
+                return n
+            end
+        end
+    end
+    return tonumber(tostring(v))
+end
+
+local function looks_ptr(p)
+    return type(p) == "number" and p > 0x10000 and p < 0x7FFFFFFFFFFF
+end
+
+local function read_ptr(addr)
+    if type(memory) ~= "table" then
+        return nil
+    end
+    if type(memory.read_pointer) == "function" then
+        local ok, v = pcall(function()
+            return memory.read_pointer(addr)
+        end)
+        if ok then
+            return as_addr(v)
+        end
+    end
+    if type(memory.read) == "function" and MEMORY_TYPE ~= nil then
+        local ok, v = pcall(function()
+            return memory.read(addr, MEMORY_TYPE.ptr)
+        end)
+        if ok then
+            return as_addr(v)
+        end
+    end
+    return nil
+end
+
+local function read_f64(addr)
+    if type(memory) ~= "table" or type(memory.read) ~= "function" or MEMORY_TYPE == nil then
+        return nil
+    end
+    local ok, v = pcall(function()
+        return memory.read(addr, MEMORY_TYPE.double)
+    end)
+    if ok and type(v) == "number" then
         return v
     end
     return nil
 end
 
-local function flag_bool(name)
-    if type(get_fflag_bool) ~= "function" then
-        return nil
+local function write_f64(addr, value)
+    if type(memory) ~= "table" or type(memory.write) ~= "function" or MEMORY_TYPE == nil then
+        return false
     end
-    return get_fflag_bool(name)
-end
-
-local found_fps_flag = nil
-local found_limit_flag = nil
-local original_fps = DEFAULT_FPS
-local original_limit = nil
-
-for i = 1, #FPS_FLAGS do
-    local v = flag_int(FPS_FLAGS[i])
-    if v ~= nil then
-        found_fps_flag = FPS_FLAGS[i]
-        original_fps = sanitize(v)
-        break
-    end
-end
-
-for i = 1, #LIMIT_FLAGS do
-    local v = flag_bool(LIMIT_FLAGS[i])
-    if v ~= nil then
-        found_limit_flag = LIMIT_FLAGS[i]
-        original_limit = v
-        break
-    end
-end
-
-local function write_fps(rate)
-    local ok = false
-    if type(set_fflag_value) == "function" then
-        if found_fps_flag ~= nil then
-            set_fflag_value(found_fps_flag, rate)
-            ok = true
-        else
-            for i = 1, #FPS_FLAGS do
-                pcall(function()
-                    set_fflag_value(FPS_FLAGS[i], rate)
-                end)
-            end
-            ok = true
-        end
-    end
-    if type(set_fflag_bool) == "function" then
-        local uncap = rate > 240
-        if found_limit_flag ~= nil then
-            set_fflag_bool(found_limit_flag, not uncap and original_limit or false)
-        else
-            for i = 1, #LIMIT_FLAGS do
-                pcall(function()
-                    set_fflag_bool(LIMIT_FLAGS[i], not uncap)
-                end)
-            end
-        end
-    end
-    if type(set_tickrate) == "function" then
-        pcall(function()
-            set_tickrate(rate)
-        end)
-    end
+    local ok = pcall(function()
+        memory.write(addr, MEMORY_TYPE.double, value)
+    end)
     return ok
 end
 
@@ -140,34 +143,176 @@ local function live_fps()
     return nil
 end
 
-local menu = gui.create(MENU_NAME, false)
-menu:set_pos(80, 80)
-menu:set_size(360, 280)
-
-local status = menu:add_label("")
-local hint = menu:add_label("Agaric uses RenderStepped, not Workspace tickrate.")
-local enabled = menu:add_checkbox("Enabled", false)
-local slider = menu:add_slider("Client FPS cap", MIN_FPS, MAX_FPS, original_fps)
-local presets = menu:add_combo("Preset", PRESETS, preset_index_for(original_fps) or 0)
-
-local last_applied = original_fps
-local last_notify_at = 0
-local last_reapply = 0
-
-local function read_slider()
-    return sanitize(slider:get_value())
+local function module_base()
+    if type(game_baseaddress) ~= "function" then
+        return nil
+    end
+    local ok, v = pcall(game_baseaddress)
+    if not ok then
+        return nil
+    end
+    return as_addr(v)
 end
 
-local function set_status(target, on)
-    local live = live_fps()
-    local line = "Target " .. tostring(target)
-    if live ~= nil then
-        line = line .. "  |  live FPS " .. tostring(live)
+-- hit = { ts, off, addr, kind }  kind = "fps" | "delay"
+local hit = nil
+local original_raw = nil
+
+local function classify(raw)
+    if type(raw) ~= "number" then
+        return nil
     end
-    if found_fps_flag ~= nil then
-        line = line .. "  |  " .. found_fps_flag
+    if raw > 20 and raw < 1000 then
+        return "fps"
+    end
+    if raw > 0.0005 and raw < 0.05 then
+        return "delay"
+    end
+    return nil
+end
+
+local function discover()
+    hit = nil
+    original_raw = nil
+    local base = module_base()
+    if not looks_ptr(base) then
+        return nil, "no module base"
+    end
+    for i = 1, #TS_PTR_RVAS do
+        local ts = read_ptr(base + TS_PTR_RVAS[i])
+        if looks_ptr(ts) then
+            for j = 1, #FPS_OFFS do
+                local addr = ts + FPS_OFFS[j]
+                local raw = read_f64(addr)
+                local kind = classify(raw)
+                if kind ~= nil then
+                    hit = {
+                        ts = ts,
+                        off = FPS_OFFS[j],
+                        addr = addr,
+                        kind = kind,
+                        rva = TS_PTR_RVAS[i]
+                    }
+                    original_raw = raw
+                    return hit, nil
+                end
+            end
+        end
+    end
+    return nil, "no TaskScheduler MaxFPS (Roblox update; RVA stale)"
+end
+
+local function raw_for_rate(rate, kind)
+    if kind == "delay" then
+        return 1 / rate
+    end
+    return rate
+end
+
+local function write_cap(rate)
+    rate = sanitize(rate)
+    local wrote_mem = false
+    if hit ~= nil then
+        wrote_mem = write_f64(hit.addr, raw_for_rate(rate, hit.kind))
+    end
+    if type(set_fflag_value) == "function" then
+        for i = 1, #FPS_FLAGS do
+            pcall(function()
+                set_fflag_value(FPS_FLAGS[i], rate)
+            end)
+        end
+    end
+    if type(set_tickrate) == "function" then
+        pcall(function()
+            set_tickrate(rate)
+        end)
+    end
+    return wrote_mem
+end
+
+local function restore_cap()
+    if hit ~= nil and original_raw ~= nil then
+        write_f64(hit.addr, original_raw)
+    elseif hit ~= nil then
+        write_f64(hit.addr, raw_for_rate(DEFAULT_FPS, hit.kind))
+    end
+    if type(set_fflag_value) == "function" then
+        for i = 1, #FPS_FLAGS do
+            pcall(function()
+                set_fflag_value(FPS_FLAGS[i], DEFAULT_FPS)
+            end)
+        end
+    end
+    if type(set_tickrate) == "function" then
+        pcall(function()
+            set_tickrate(DEFAULT_FPS)
+        end)
+    end
+end
+
+local function probe_log()
+    local base = module_base()
+    log.add("---- tickrate probe ----", color(0.4, 0.8, 1, 1))
+    log.add("base=" .. tostring(base) .. "  liveFPS=" .. tostring(live_fps()) .. "  get_tickrate=" .. tostring(type(get_tickrate) == "function" and get_tickrate() or "n/a"), color(0.8, 0.8, 0.8, 1))
+    for i = 1, #FPS_FLAGS do
+        local v = nil
+        if type(get_fflag_value) == "function" then
+            v = get_fflag_value(FPS_FLAGS[i])
+        end
+        log.add("fflag " .. FPS_FLAGS[i] .. " = " .. tostring(v), color(0.8, 0.8, 0.8, 1))
+    end
+    if looks_ptr(base) then
+        for i = 1, #TS_PTR_RVAS do
+            local ts = read_ptr(base + TS_PTR_RVAS[i])
+            local line = string.format("RVA 0x%X -> ts=%s", TS_PTR_RVAS[i], tostring(ts))
+            if looks_ptr(ts) then
+                for j = 1, #FPS_OFFS do
+                    local raw = read_f64(ts + FPS_OFFS[j])
+                    line = line .. string.format("  +0x%X=%s", FPS_OFFS[j], tostring(raw))
+                end
+            end
+            log.add(line, color(0.8, 0.8, 0.8, 1))
+        end
+    end
+    if hit ~= nil then
+        log.add(string.format("using ts+0x%X kind=%s rva=0x%X raw=%s", hit.off, hit.kind, hit.rva, tostring(original_raw)), color(0.4, 1, 0.5, 1))
     else
-        line = line .. "  |  writing all FPS flag names"
+        log.add("TaskScheduler MaxFPS not found. FPS unlock cannot write memory on this build.", color(1, 0.4, 0.4, 1))
+    end
+end
+
+discover()
+
+local menu = gui.create(MENU_NAME, false)
+menu:set_pos(80, 80)
+menu:set_size(380, 300)
+
+local status = menu:add_label("")
+local hint = menu:add_label("Will not speed Agaric. Server owns movement.")
+local enabled = menu:add_checkbox("Enabled", false)
+local slider = menu:add_slider("Client FPS cap", MIN_FPS, MAX_FPS, DEFAULT_FPS)
+local presets = menu:add_combo("Preset", PRESETS, 0)
+
+local last_applied = DEFAULT_FPS
+local last_reapply = 0
+local last_notify = 0
+
+local function notify(msg, kind)
+    local now = get_tickcount()
+    if now - last_notify < 250 then
+        return
+    end
+    last_notify = now
+    log.notification(msg, kind or "info")
+end
+
+local function set_status(on)
+    local live = live_fps()
+    local line
+    if hit == nil then
+        line = "MaxFPS not found  |  live " .. tostring(live)
+    else
+        line = string.format("mem ts+0x%X %s  |  target %d  |  live %s", hit.off, hit.kind, last_applied, tostring(live))
     end
     if not on then
         line = line .. "  (off)"
@@ -175,47 +320,37 @@ local function set_status(target, on)
     status:set_label(line)
 end
 
-local function notify(message, kind)
-    local now = get_tickcount()
-    if now - last_notify_at < 250 then
-        return
-    end
-    last_notify_at = now
-    log.notification(message, kind or "info")
-end
-
 local function apply(rate, silent)
     rate = sanitize(rate)
-    write_fps(rate)
     last_applied = rate
-    set_status(rate, true)
+    if hit == nil then
+        discover()
+    end
+    local ok = write_cap(rate)
+    set_status(true)
     if not silent then
-        notify("Client FPS cap " .. tostring(rate), "success")
+        if hit == nil then
+            notify("No TaskScheduler MaxFPS on this Roblox build", "warning")
+        elseif ok then
+            notify("Wrote FPS cap " .. tostring(rate) .. " (will not speed Agaric)", "success")
+        else
+            notify("Memory write failed", "warning")
+        end
     end
 end
 
 local function restore(silent)
-    write_fps(original_fps)
-    if found_limit_flag ~= nil and original_limit ~= nil and type(set_fflag_bool) == "function" then
-        set_fflag_bool(found_limit_flag, original_limit)
-    end
-    set_status(original_fps, false)
+    restore_cap()
+    last_applied = DEFAULT_FPS
+    set_status(false)
     if not silent then
-        notify("FPS cap restored to " .. tostring(original_fps), "info")
-    end
-end
-
-local function sync_widgets(rate)
-    ui.setvalue(MENU_NAME, "Client FPS cap", rate)
-    local idx = preset_index_for(rate)
-    if idx ~= nil then
-        ui.setvalue(MENU_NAME, "Preset", idx)
+        notify("FPS cap restored", "info")
     end
 end
 
 enabled:change_callback(function()
     if enabled:get_value() then
-        apply(read_slider(), false)
+        apply(sanitize(slider:get_value()), false)
     else
         restore(false)
     end
@@ -223,7 +358,7 @@ end)
 
 slider:change_callback(function()
     if enabled:get_value() then
-        apply(read_slider(), true)
+        apply(sanitize(slider:get_value()), true)
     end
 end)
 
@@ -238,28 +373,22 @@ presets:change_callback(function()
     end
 end)
 
+menu:add_button("Probe (check Photon log)", function()
+    discover()
+    probe_log()
+    set_status(enabled:get_value())
+end)
+
 menu:add_button("Reset to 60", function()
-    sync_widgets(DEFAULT_FPS)
+    ui.setvalue(MENU_NAME, "Client FPS cap", DEFAULT_FPS)
+    ui.setvalue(MENU_NAME, "Preset", 0)
     if enabled:get_value() then
         apply(DEFAULT_FPS, false)
     end
 end)
 
-menu:add_button("Restore original", function()
-    sync_widgets(original_fps)
-    if enabled:get_value() then
-        apply(original_fps, false)
-    else
-        restore(false)
-    end
-end)
-
-set_status(original_fps, false)
-if found_fps_flag ~= nil then
-    log.add("Tickrate: using FFlag " .. found_fps_flag .. " (workspace set_tickrate is a no-op in Agaric)", color(0.4, 0.8, 1, 1))
-else
-    log.add("Tickrate: no FPS FFlag found yet; will try all known names when enabled.", color(1, 0.8, 0.3, 1))
-end
+set_status(false)
+probe_log()
 
 hook.add("render", "tickrate_reapply", function()
     local now = get_tickcount()
@@ -268,9 +397,12 @@ hook.add("render", "tickrate_reapply", function()
     end
     last_reapply = now
     if enabled:get_value() then
-        write_fps(last_applied)
-        set_status(last_applied, true)
+        if hit == nil then
+            discover()
+        end
+        write_cap(last_applied)
+        set_status(true)
     else
-        set_status(original_fps, false)
+        set_status(false)
     end
 end)

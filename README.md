@@ -4,7 +4,7 @@ Photon Lua scripts for Agaric, using the [Photon API](https://photon-4.gitbook.i
 
 | Script | Window | What it does |
 | --- | --- | --- |
-| `tickrate.lua` | **Tickrate** | Client tickrate others do not control |
+| `tickrate.lua` | **Tickrate** | Client FPS cap via TaskScheduler FFlag (Workspace tickrate is a no-op in Agaric) |
 | `awareness.lua` | **Agaric ESP** | Mass / threat / virus / merge timer overlay + auto-feed |
 | `instant_merge.lua` | **Instant Merge** | Auto-taps the paid Merge ability (needs it equipped) |
 
@@ -19,19 +19,20 @@ Photon Lua scripts for Agaric, using the [Photon API](https://photon-4.gitbook.i
 
 ## Tickrate (`tickrate.lua`)
 
-`set_tickrate()` is Workspace Heartbeat. Agaric's sim runs on **RenderStepped**, so that API does nothing here.
+This will not make you faster in Agaric. Movement is server-side and `ClientPrediction` uses frame **delta time**, so more FPS just draws more often.
 
-This script now writes FFlag `TaskSchedulerTargetFps` (and related names) so the Roblox client FPS cap actually changes. Status shows live `get_fps()`. Enable it — it starts **off** so you can see the live FPS first.
+`set_tickrate()` and FFlags did nothing at runtime. The script now tries the external method: write TaskScheduler **MaxFPS** in memory (`game_baseaddress` + known RVAs, double at `+0xB0` / `+0x1B0`).
 
-This can make prediction / input feel snappier. It will not make the server move you at 2× speed.
+1. Run it and open Photon's log.
+2. Click **Probe**. You want a line like `using ts+0xB0 kind=fps`.
+3. If Probe says MaxFPS not found, this Roblox build's RVA is stale and Photon cannot unlock FPS until the pointer is updated.
+4. If Probe finds it, enable the slider and watch **live FPS**. If live FPS rises, the cap worked — you still will not move at 2×.
 
 | Control | What it does |
 | --- | --- |
-| **Enabled** | Starts off. Writes the FPS FFlag while on, restores the original cap when off. Re-applies every 400ms because Roblox resets it. |
-| **Client FPS cap** | `30`–`360`. Above 240 also clears `TaskSchedulerLimitTargetFpsTo2402`. |
-| **Preset** | `60`, `90`, `120`, `144`, `240`, `360`. |
-
-Status: target, live FPS, and which FFlag name was found.
+| **Enabled** | Starts off. Writes MaxFPS while on. |
+| **Client FPS cap** | `30`–`360`. |
+| **Probe** | Dumps base, FFlags, and each RVA/offset into the Photon log. |
 
 ## Agaric ESP (`awareness.lua`)
 
