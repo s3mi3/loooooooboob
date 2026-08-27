@@ -19,13 +19,19 @@ Photon Lua scripts for Agaric, using the [Photon API](https://photon-4.gitbook.i
 
 ## Tickrate (`tickrate.lua`)
 
+`set_tickrate()` is Workspace Heartbeat. Agaric's sim runs on **RenderStepped**, so that API does nothing here.
+
+This script now writes FFlag `TaskSchedulerTargetFps` (and related names) so the Roblox client FPS cap actually changes. Status shows live `get_fps()`. Enable it — it starts **off** so you can see the live FPS first.
+
+This can make prediction / input feel snappier. It will not make the server move you at 2× speed.
+
 | Control | What it does |
 | --- | --- |
-| **Enabled** | When on, applies the slider/preset. When off, restores the tickrate captured at load. |
-| **Tickrate** | Slider from `1` to `240`. Roblox default is `60`. |
-| **Preset** | `30`, `60`, `90`, `120`, `240`. `120` is 2x the default. |
-| **Reset to 60** | Sets the slider and tickrate back to default. |
-| **Restore original** | Sets the slider and tickrate back to whatever `get_tickrate()` returned when the script loaded. |
+| **Enabled** | Starts off. Writes the FPS FFlag while on, restores the original cap when off. Re-applies every 400ms because Roblox resets it. |
+| **Client FPS cap** | `30`–`360`. Above 240 also clears `TaskSchedulerLimitTargetFpsTo2402`. |
+| **Preset** | `60`, `90`, `120`, `144`, `240`, `360`. |
+
+Status: target, live FPS, and which FFlag name was found.
 
 ## Agaric ESP (`awareness.lua`)
 
