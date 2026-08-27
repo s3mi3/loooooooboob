@@ -4,8 +4,9 @@ Photon Lua scripts for Agaric, using the [Photon API](https://photon-4.gitbook.i
 
 | Script | Window | What it does |
 | --- | --- | --- |
-| `tickrate.lua` | **Tickrate** | Slider / presets for `set_tickrate` |
-| `instant_merge.lua` | **Instant Merge** | Auto-taps the equipped **Merge** ability when you are split |
+| `tickrate.lua` | **Tickrate** | Client tickrate others do not control |
+| `awareness.lua` | **Agaric ESP** | Mass / threat / virus / merge timer overlay + auto-feed |
+| `instant_merge.lua` | **Instant Merge** | Auto-taps the paid Merge ability (needs it equipped) |
 
 ## Load
 
@@ -14,7 +15,7 @@ Photon Lua scripts for Agaric, using the [Photon API](https://photon-4.gitbook.i
 3. Run the script.
 4. Open the Photon menu.
 
-`tickrate.lua` and `instant_merge.lua` can run at the same time.
+`tickrate.lua`, `awareness.lua`, and `instant_merge.lua` can run at the same time.
 
 ## Tickrate (`tickrate.lua`)
 
@@ -25,6 +26,25 @@ Photon Lua scripts for Agaric, using the [Photon API](https://photon-4.gitbook.i
 | **Preset** | `30`, `60`, `90`, `120`, `240`. `120` is 2x the default. |
 | **Reset to 60** | Sets the slider and tickrate back to default. |
 | **Restore original** | Sets the slider and tickrate back to whatever `get_tickrate()` returned when the script loaded. |
+
+## Agaric ESP (`awareness.lua`)
+
+This is the Photon-only stuff other players do not get. It does not buy or skip shop abilities.
+
+Reads `PlayerGui.Agaric2D` frames the client already drew, then overlays:
+
+| Control | What it does |
+| --- | --- |
+| **Enabled** | Master draw toggle. |
+| **Show mass** | Score on every other cell (dump: displayed score = mass / 10). |
+| **Show names** | `NameLabel` text. |
+| **Threat / prey rings** | Red if they can eat you (1.25× mass), green if you can eat them. |
+| **Mark viruses** | `Spike` frames tagged POP / SAFE vs your size. |
+| **My split reach** | Circle at ~6× your radius (split kill zone). |
+| **My merge timer** | After you split, countdown using `GetMergeDelay` (2–6s). `CAN MERGE` when the wait is over. |
+| **Auto-feed (W)** | Taps W at the chosen Hz. Same key everyone has; Photon just hits it faster and steadier. |
+
+Photon still cannot move cells on the server or grant Merge/Speed. Tickrate + this overlay are the real unpaid edge.
 
 ## Instant Merge (`instant_merge.lua`)
 
@@ -76,6 +96,7 @@ input.get_mouse_position()
 input.set_mouse_position(vector2)
 
 hook.add("render", id, fn)
+render.add_circle / add_ngon / add_text
 
 instance:isvalid()
 instance:get_children() / get_descendants()

@@ -70,6 +70,18 @@ log.clear()
 log.notification(message, type)    -- type: "info", "warning", "success"
 ```
 
+## Render
+
+Must be called from `hook.add("render", ...)`.
+
+```lua
+render.add_line(p1, p2, color, thickness)
+render.add_circle(pos, radius, color)
+render.add_circle_filled(pos, radius, color)
+render.add_ngon(pos, radius, color, segments, thickness)
+render.add_text(pos, text, color, size, outline)
+```
+
 ## Input and hooks
 
 ```lua
