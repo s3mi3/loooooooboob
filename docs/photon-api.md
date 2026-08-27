@@ -70,6 +70,22 @@ log.clear()
 log.notification(message, type)    -- type: "info", "warning", "success"
 ```
 
+## Input and hooks
+
+```lua
+input.simulate_press(vk)
+input.simulate_press_down(vk)
+input.simulate_press_up(vk)
+input.simulate_mouse_click(MOUSE1)
+input.get_mouse_position()
+input.set_mouse_position(vector2)
+hook.add(name, id, fn)
+hook.remove(name, id)
+menu_active()
+is_gamefocused()
+get_unixtime()
+```
+
 ## Types
 
 From [type](https://photon-4.gitbook.io/api/type.md):
