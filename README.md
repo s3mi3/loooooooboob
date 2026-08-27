@@ -2,17 +2,13 @@
 
 Photon Lua, [API](https://photon-4.gitbook.io/api).
 
-Windows use `force_open = true` so they show **without** opening the Photon menu. A loaded script also draws a top-left watermark:
-
-- `agaric esp on`
-- `tickrate script on`
-- `merge script on`
+Windows use `force_open = true`. **Insert** hides the ESP window; merge cooldown stays on screen.
 
 | Script | What you should see |
 | --- | --- |
-| `awareness.lua` | Watermark + circles on cells after you spawn. Status: `Agaric2D missing` until in a match, then `blobs N`. |
-| `tickrate.lua` | Watermark. Will not speed Agaric. |
-| `instant_merge.lua` | Watermark. Set hotbar slot, **Merge now**. Needs Merge equipped. |
+| `awareness.lua` | Small **ESP** window: Name box, ESP toggle, Hide (Insert). Circles on cells. `MERGE Xs` / `CAN MERGE` at the top of the screen when split. |
+| `tickrate.lua` | Load test only. Will not speed Agaric. |
+| `instant_merge.lua` | Taps hotbar 1–10. Needs Merge equipped. |
 
 No window and no watermark means Photon errored before `gui.create` — check the Photon log.
 

@@ -1,10 +1,10 @@
--- Agaric ESP for Photon
--- Open this window even when the Photon menu is closed (force_open).
--- Draws a watermark immediately so you can tell the render hook is alive.
+-- Small Agaric ESP for Photon
+-- Name box, ESP toggle, Insert hides the window. Merge cooldown stays on screen.
 
-local MENU = "Agaric ESP"
-local VK_W = 0x57
+local MENU = "ESP"
 local SCAN_CAP = 800
+local WIN_X, WIN_Y = 16, 16
+local WIN_W, WIN_H = 188, 92
 
 pcall(function()
     gui.remove(MENU)
@@ -190,29 +190,52 @@ local function walk(root, fn)
     return n
 end
 
-local function round_or(n)
-    if type(n) ~= "number" then
-        return 0
+local function merge_delay(score)
+    local mass = (score or 0) * 10
+    local d = 1.96 + mass * 0.00204
+    if d < 2 then
+        d = 2
     end
-    return math.floor(n + 0.5)
+    if d > 6 then
+        d = 6
+    end
+    return d
 end
 
-local last_err = "ok"
-local found_gui = false
-local blob_n = 0
-local spike_n = 0
-local own_n = 0
-local last_feed = 0
+local function fmt1(n)
+    local i = math.floor(n * 10 + 0.5)
+    local w = math.floor(i / 10)
+    local f = i - w * 10
+    return tostring(w) .. "." .. tostring(f)
+end
 
 local menu = gui.create(MENU, true)
-menu:set_pos(40, 40)
-menu:set_size(320, 220)
+menu:set_pos(WIN_X, WIN_Y)
+menu:set_size(WIN_W, WIN_H)
 
-local status = menu:add_label("booting")
-local enabled = menu:add_checkbox("Draw overlay", true)
-local auto_feed = menu:add_checkbox("Auto-feed W", false)
+local namebox = menu:add_textbox("Name")
+local enabled = menu:add_checkbox("ESP", true)
+local hidebind = menu:add_keybind("Hide", 0x2D)
 
-status:set_label("window ok — open Photon log if overlay is missing")
+local hidden = false
+local prev_hide = false
+local name_seeded = false
+local last_own = 0
+local split_at = 0
+
+local function typed_name()
+    local t = nil
+    pcall(function()
+        t = namebox:get_text()
+    end)
+    if t ~= nil then
+        t = tostring(t)
+        if t ~= "" then
+            return t
+        end
+    end
+    return nil
+end
 
 local function lp()
     local players = game:get_service("Players")
@@ -244,7 +267,11 @@ local function pgui()
     return nil
 end
 
-local function mine(blob, player)
+local function mine(blob, player, who)
+    local label = text_of(child(blob, "NameLabel"))
+    if who ~= nil and label ~= nil and has(label, who) then
+        return true
+    end
     if not player then
         return false
     end
@@ -256,127 +283,178 @@ local function mine(blob, player)
     if owner ~= nil and tostring(owner) == uid then
         return true
     end
-    local name = text_of(child(blob, "NameLabel"))
-    if name == nil then
+    if label == nil then
         return false
     end
-    if has(name, player.name) then
+    if has(label, player.name) then
         return true
     end
-    if player.display_name ~= nil and has(name, player.display_name) then
+    if player.display_name ~= nil and has(label, player.display_name) then
         return true
     end
     return false
 end
 
+local function set_hidden(on)
+    hidden = on
+    if hidden then
+        menu:set_pos(-800, -800)
+        menu:set_size(1, 1)
+    else
+        menu:set_pos(WIN_X, WIN_Y)
+        menu:set_size(WIN_W, WIN_H)
+    end
+end
+
+local function draw_merge(text, col, x, y)
+    local sx, sy = 40, 8
+    pcall(function()
+        local s = get_screen_size()
+        sx = s.x * 0.5 - 36
+        sy = 10
+    end)
+    render.add_text(vector2(sx, sy), text, col, 18, true)
+    if x ~= nil then
+        render.add_text(vector2(x - 28, y - 22), text, col, 14, true)
+    end
+end
+
 hook.add("render", "agaric_esp", function()
     local pass, err = pcall(function()
-        local screen = get_screen_size()
-        if enabled:get_value() then
-            render.add_text(vector2(12, 12), "agaric esp on", color(0.4, 1, 0.6, 1), 14, true)
+        local down = false
+        pcall(function()
+            down = hidebind:get_state()
+        end)
+        if down and not prev_hide then
+            set_hidden(not hidden)
         end
-
-        if not enabled:get_value() then
-            status:set_label("overlay off")
-            return
-        end
-
-        local pg = pgui()
-        if not pg then
-            found_gui = false
-            status:set_label("no PlayerGui yet")
-            return
-        end
-
-        local root = child(pg, "Agaric2D")
-        if not root then
-            root = desc(pg, "Agaric2D")
-        end
-        if not root then
-            found_gui = false
-            status:set_label("PlayerGui ok, Agaric2D missing (spawn in)")
-            return
-        end
-        found_gui = true
-
-        local canvas = desc(root, "Canvas")
-        if not canvas then
-            canvas = child(root, "Camera")
-        end
-        if not canvas then
-            canvas = root
-        end
+        prev_hide = down
 
         local player = lp()
-        blob_n = 0
-        spike_n = 0
-        own_n = 0
-        local biggest = 0
-        local visited = walk(canvas, function(inst)
-            local nm = inst.name
-            if nm ~= "Spike" and nm ~= "PlayerBlob" then
-                return
+        if not name_seeded and player ~= nil then
+            local seed = player.name
+            if seed == nil or seed == "" then
+                seed = player.display_name
             end
-            local x, y, r = geom(inst)
-            if x == nil then
-                return
+            if seed ~= nil and seed ~= "" then
+                pcall(function()
+                    ui.setvalue(MENU, "Name", tostring(seed))
+                end)
+                name_seeded = true
             end
-            if nm == "Spike" then
-                spike_n = spike_n + 1
-                render.add_circle(vector2(x, y), r, color(0.55, 0.85, 0.1, 0.95))
-                return
-            end
-            blob_n = blob_n + 1
-            local mass = digits(text_of(child(inst, "MassLabel")))
-            local is_own = mine(inst, player)
-            local col = color(1, 1, 1, 0.45)
-            if is_own then
-                own_n = own_n + 1
-                col = color(0.35, 0.8, 1, 0.95)
-                if mass ~= nil and mass >= biggest then
-                    biggest = mass
-                end
-            elseif mass ~= nil and biggest > 0 then
-                if mass >= biggest * 1.25 then
-                    col = color(1, 0.2, 0.2, 0.95)
-                elseif biggest >= mass * 1.25 then
-                    col = color(0.2, 1, 0.35, 0.95)
-                end
-            end
-            render.add_circle(vector2(x, y), r, col)
-            if mass ~= nil then
-                render.add_text(vector2(x - 10, y + r + 2), tostring(mass), col, 12, true)
-            end
-        end)
-
-        local line = "walk " .. tostring(visited) .. "  blobs " .. tostring(blob_n) .. "  yours " .. tostring(own_n) .. "  spikes " .. tostring(spike_n)
-        if blob_n == 0 and visited <= 1 then
-            line = "Agaric2D ok, get_children empty (" .. tostring(visited) .. ")"
         end
-        status:set_label(line)
-        last_err = "ok"
 
-        if auto_feed:get_value() then
-            local now = get_tickcount()
-            local focused = true
-            pcall(function()
-                focused = is_gamefocused() and not menu_active()
-            end)
-            if focused and now - last_feed > 80 then
-                input.simulate_press(VK_W)
-                last_feed = now
+        local who = typed_name()
+        local esp_on = enabled:get_value()
+        local pg = pgui()
+        local root = nil
+        if pg then
+            root = child(pg, "Agaric2D")
+            if not root then
+                root = desc(pg, "Agaric2D")
             end
+        end
+
+        local own_n = 0
+        local biggest = 0
+        local ox, oy, orad = nil, nil, nil
+        local spikes = {}
+        local others = {}
+
+        if root then
+            local canvas = desc(root, "Canvas")
+            if not canvas then
+                canvas = child(root, "Camera")
+            end
+            if not canvas then
+                canvas = root
+            end
+            walk(canvas, function(inst)
+                local nm = inst.name
+                if nm ~= "Spike" and nm ~= "PlayerBlob" then
+                    return
+                end
+                local x, y, r = geom(inst)
+                if x == nil then
+                    return
+                end
+                if nm == "Spike" then
+                    spikes[#spikes + 1] = { x = x, y = y, r = r }
+                    return
+                end
+                local score = digits(text_of(child(inst, "MassLabel")))
+                if mine(inst, player, who) then
+                    own_n = own_n + 1
+                    if score ~= nil and score >= biggest then
+                        biggest = score
+                        ox, oy, orad = x, y, r
+                    elseif ox == nil then
+                        ox, oy, orad = x, y, r
+                    end
+                else
+                    others[#others + 1] = { x = x, y = y, r = r, score = score }
+                end
+            end)
+        end
+
+        local now = get_tickcount()
+        if own_n > last_own then
+            split_at = now
+        end
+        if own_n <= 1 then
+            split_at = 0
+        end
+        last_own = own_n
+
+        if esp_on then
+            local i = 1
+            while i <= #spikes do
+                local s = spikes[i]
+                render.add_circle(vector2(s.x, s.y), s.r, color(0.55, 0.85, 0.1, 0.9))
+                i = i + 1
+            end
+            i = 1
+            while i <= #others do
+                local c = others[i]
+                local col = color(1, 1, 1, 0.4)
+                if c.score ~= nil and biggest > 0 then
+                    if c.score >= biggest * 1.25 then
+                        col = color(1, 0.22, 0.22, 0.95)
+                    elseif biggest >= c.score * 1.25 then
+                        col = color(0.25, 1, 0.35, 0.95)
+                    end
+                end
+                render.add_circle(vector2(c.x, c.y), c.r, col)
+                if c.score ~= nil then
+                    render.add_text(vector2(c.x - 10, c.y + c.r + 1), tostring(c.score), col, 12, true)
+                end
+                i = i + 1
+            end
+            if ox ~= nil then
+                render.add_circle(vector2(ox, oy), orad, color(0.35, 0.85, 1, 0.95))
+            end
+        end
+
+        if own_n > 1 and split_at > 0 then
+            local delay = merge_delay(biggest)
+            local left = delay - (now - split_at) / 1000
+            local col = color(1, 0.82, 0.35, 1)
+            local text = "CAN MERGE"
+            if left > 0 then
+                text = "MERGE " .. fmt1(left) .. "s"
+            else
+                col = color(0.4, 1, 0.5, 1)
+            end
+            draw_merge(text, col, ox, oy)
         end
     end)
 
     if not pass then
-        last_err = tostring(err)
         pcall(function()
-            status:set_label("error: " .. last_err)
-            render.add_text(vector2(12, 28), last_err, color(1, 0.3, 0.3, 1), 13, true)
+            render.add_text(vector2(12, 8), tostring(err), color(1, 0.3, 0.3, 1), 13, true)
         end)
     end
 end)
 
-log.add("Agaric ESP: window is force-open. You should see 'agaric esp on' at the top-left.", color(0.4, 0.8, 1, 1))
-log.notification("Agaric ESP loaded", "success")
+log.add("ESP: type your in-game name. Insert hides the window. Merge timer stays on screen.", color(0.4, 0.8, 1, 1))
+log.notification("ESP loaded", "success")
