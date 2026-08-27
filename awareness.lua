@@ -8,7 +8,6 @@ local SCAN_CAP = 800
 local WIN_X, WIN_Y = 16, 16
 local WIN_W, WIN_H = 340, 210
 local BANNER_SIZE = 32
-local MASS_SIZE = 18
 
 pcall(function()
     gui.remove(MENU)
@@ -435,7 +434,6 @@ hook.add("render", "agaric_esp", function()
             while i <= #spikes do
                 local s = spikes[i]
                 local pos = vector2(s.x, s.y)
-                -- viruses: thick red rings (not green)
                 render.add_ngon(pos, s.r, color(1, 0.08, 0.08, 1), 20, 5)
                 render.add_ngon(pos, s.r + 6, color(1, 0.2, 0.12, 0.9), 20, 2)
                 i = i + 1
@@ -443,7 +441,7 @@ hook.add("render", "agaric_esp", function()
             i = 1
             while i <= #others do
                 local c = others[i]
-                local col = color(1, 1, 1, 0.45)
+                local col = color(1, 1, 1, 0.4)
                 if c.score ~= nil and biggest > 0 then
                     if c.score >= biggest * 1.25 then
                         col = color(1, 0.22, 0.22, 0.95)
@@ -451,20 +449,27 @@ hook.add("render", "agaric_esp", function()
                         col = color(0.25, 1, 0.35, 0.95)
                     end
                 end
-                render.add_ngon(vector2(c.x, c.y), c.r, col, 24, 3)
+                render.add_circle(vector2(c.x, c.y), c.r, col)
                 if c.score ~= nil then
-                    local t = tostring(c.score)
-                    render.add_text(vector2(c.x - #t * 5, c.y + c.r + 2), t, col, MASS_SIZE, true)
+                    render.add_text(vector2(c.x - 10, c.y + c.r + 1), tostring(c.score), col, 12, true)
                 end
                 i = i + 1
             end
-        end
-
-        local i = 1
-        while i <= own_n do
-            local m = own[i]
-            render.add_ngon(vector2(m.x, m.y), m.r + 4, color(0.2, 1, 0.4, 1), 28, 4)
-            i = i + 1
+            i = 1
+            local ox, oy, orad = nil, nil, nil
+            while i <= own_n do
+                local m = own[i]
+                if ox == nil then
+                    ox, oy, orad = m.x, m.y, m.r
+                end
+                if m.score ~= nil and m.score >= biggest then
+                    ox, oy, orad = m.x, m.y, m.r
+                end
+                i = i + 1
+            end
+            if ox ~= nil then
+                render.add_circle(vector2(ox, oy), orad, color(0.35, 0.85, 1, 0.95))
+            end
         end
 
         local banner = "TYPE IN-GAME NAME"
