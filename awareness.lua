@@ -1,54 +1,57 @@
 -- Agaric ESP for Photon
 -- Type your in-game blob nick (not the Roblox / Photon name).
--- Insert hides the panel. Merge cooldown stays on Photon's watermark
--- and as a large banner at the top of the screen.
+-- Insert hides the panel. Merge time is the banner at the top.
 
-local MENU = "Agaric"
-local SCAN_CAP = 1200
+local MENU = "ESP"
+local SCAN_CAP = 800
 local WIN_X, WIN_Y = 16, 16
 local WIN_W, WIN_H = 340, 210
 local BANNER_SIZE = 32
 local ARROW_MAX = 6
 local EAT_RATIO = 1.25
 
-local ready = false
-
-pcall(function()
-    log.add("ESP: per-piece merge, off-screen threats, cell count on others. Insert hides the panel.", color(0.4, 0.8, 1, 1))
-end)
 pcall(function()
     hook.remove("render", "agaric_esp")
 end)
-pcall(function()
-    hook.remove("append_watermark", "agaric_merge")
-end)
+
+local function ok(inst)
+    if inst == nil then
+        return false
+    end
+    local pass, alive = pcall(function()
+        return inst:isvalid()
+    end)
+    return pass and alive == true
+end
 
 local function child(parent, name)
-    if parent == nil then
+    if not ok(parent) then
         return nil
     end
     local pass, inst = pcall(function()
         return parent:find_first_child(name)
     end)
-    if pass and inst ~= nil then
+    if pass and ok(inst) then
         return inst
     end
     return nil
 end
 
-local function iname(inst)
-    local nm = nil
-    pcall(function()
-        nm = inst.name
-    end)
-    if nm == nil then
+local function desc(parent, name)
+    if not ok(parent) then
         return nil
     end
-    return tostring(nm)
+    local pass, inst = pcall(function()
+        return parent:find_first_descendant(name)
+    end)
+    if pass and ok(inst) then
+        return inst
+    end
+    return nil
 end
 
 local function text_of(inst)
-    if inst == nil then
+    if not ok(inst) then
         return nil
     end
     local pass, t = pcall(function()
@@ -118,9 +121,6 @@ local function lower(s)
 end
 
 local function geom(inst)
-    if inst == nil then
-        return nil
-    end
     local pass, pos, size = pcall(function()
         return inst.gui_position, inst.gui_size
     end)
@@ -135,13 +135,15 @@ local function geom(inst)
 end
 
 local function kids_of(inst)
-    if inst == nil then
-        return nil
-    end
     local list = nil
     pcall(function()
         list = inst:get_children()
     end)
+    if list == nil then
+        pcall(function()
+            list = inst:GetChildren()
+        end)
+    end
     return list
 end
 
@@ -170,6 +172,29 @@ local function each(list, fn)
             end)
         end
     end)
+end
+
+local function walk(root, fn)
+    local n = 0
+    local function rec(inst, depth)
+        if n >= SCAN_CAP or depth > 14 or not ok(inst) then
+            return
+        end
+        local nm = nil
+        pcall(function()
+            nm = inst.name
+        end)
+        n = n + 1
+        if nm == "PlayerBlob" or nm == "Spike" then
+            fn(inst, nm)
+            return
+        end
+        each(kids_of(inst), function(ch)
+            rec(ch, depth + 1)
+        end)
+    end
+    rec(root, 0)
+    return n
 end
 
 local function merge_delay(score)
@@ -267,7 +292,7 @@ local function draw_threat_arrow(ax, ay, dx, dy, label, col)
     render.add_text(vector2(tx, ty), label, col, 16, true)
 end
 
-local menu = gui.create(MENU, false)
+local menu = gui.create(MENU, true)
 menu:set_pos(WIN_X, WIN_Y)
 menu:set_size(WIN_W, WIN_H)
 
@@ -308,84 +333,36 @@ local function lp()
         local players = game:get_service("Players")
         p = players.local_player
     end)
-    return p
-end
-
-local function pgui()
-    local p = lp()
-    if p == nil then
-        return nil
-    end
-    return child(p, "PlayerGui")
-end
-
-local function find_agaric()
-    local pg = pgui()
-    if pg == nil then
-        return nil
-    end
-    local root = child(pg, "Agaric2D")
-    if root ~= nil then
-        return root
-    end
-    local cam = child(pg, "Camera")
-    if cam ~= nil then
-        root = child(cam, "Agaric2D")
-        if root ~= nil then
-            return root
-        end
+    if ok(p) then
+        return p
     end
     return nil
 end
 
-local function collect(root)
-    local blobs = {}
-    local spikes = {}
-    local n = 0
-    local function rec(inst, depth)
-        if n >= SCAN_CAP or depth > 10 or inst == nil then
-            return
-        end
-        local nm = iname(inst)
-        if nm == nil then
-            return
-        end
-        n = n + 1
-        if nm == "PlayerBlob" then
-            blobs[#blobs + 1] = inst
-            return
-        end
-        if nm == "Spike" then
-            spikes[#spikes + 1] = inst
-            return
-        end
-        if nm ~= "Camera" and nm ~= "Canvas" and nm ~= "World" and nm ~= "Entities" then
-            return
-        end
-        each(kids_of(inst), function(ch)
-            rec(ch, depth + 1)
-        end)
+local function pgui()
+    local p = lp()
+    if not p then
+        return nil
     end
-    local cam = child(root, "Camera")
-    local canvas = child(root, "Canvas")
-    if canvas == nil and cam ~= nil then
-        canvas = child(cam, "Canvas")
+    local g = child(p, "PlayerGui")
+    if g then
+        return g
     end
-    if canvas ~= nil then
-        rec(canvas, 0)
-    elseif cam ~= nil then
-        rec(cam, 0)
-    else
-        rec(root, 0)
+    local pass, cls = pcall(function()
+        return p:find_first_child_class("PlayerGui")
+    end)
+    if pass and ok(cls) then
+        return cls
     end
-    return blobs, spikes
+    return nil
 end
 
-local function is_mine(label, who)
-    if who == nil or label == nil then
+local function mine(blob, who)
+    if who == nil then
         return false
     end
-    return has(label, who)
+    local label = text_of(child(blob, "NameLabel"))
+    return label ~= nil and has(label, who)
 end
 
 local function set_hidden(on)
@@ -445,21 +422,14 @@ local function track_own(curr, now)
         while j <= #own_state do
             if not used[j] then
                 local p = own_state[j]
-                local same = c.id ~= nil and p.id ~= nil and c.id == p.id
                 local d = dist2(c.x, c.y, p.x, p.y)
                 local lim = c.r * 5
                 if lim < 140 then
                     lim = 140
                 end
-                if same or d < lim * lim then
-                    local cost = d
-                    if same then
-                        cost = -1
-                    end
-                    if best == nil or cost < best then
-                        best = cost
-                        bj = j
-                    end
+                if d < lim * lim and (best == nil or d < best) then
+                    best = d
+                    bj = j
                 end
             end
             j = j + 1
@@ -478,7 +448,6 @@ local function track_own(curr, now)
             y = c.y,
             r = c.r,
             score = c.score,
-            id = c.id,
             born = born,
             oldscore = oldscore,
             isnew = isnew
@@ -520,9 +489,6 @@ local function piece_left(piece, now)
 end
 
 hook.add("render", "agaric_esp", function()
-    if ready ~= true then
-        return
-    end
     local pass, err = pcall(function()
         local down = false
         pcall(function()
@@ -532,28 +498,19 @@ hook.add("render", "agaric_esp", function()
             set_hidden(not hidden)
         end
         prev_hide = down
-        if hidden ~= true then
-            pcall(function()
-                menu:set_pos(WIN_X, WIN_Y)
-            end)
-        end
 
         local who = typed_name()
         local esp_on = true
         pcall(function()
             esp_on = enabled:get_value()
         end)
-        local now = 0
-        pcall(function()
-            now = get_tickcount()
-        end)
-        local sw, sh = screen()
-
-        local root = find_agaric()
-        local blob_insts = {}
-        local spike_insts = {}
-        if root ~= nil then
-            blob_insts, spike_insts = collect(root)
+        local pg = pgui()
+        local root = nil
+        if pg then
+            root = child(pg, "Agaric2D")
+            if not root then
+                root = desc(pg, "Agaric2D")
+            end
         end
 
         local own = {}
@@ -563,32 +520,27 @@ hook.add("render", "agaric_esp", function()
         local others = {}
         local counts = {}
 
-        local si = 1
-        while si <= #spike_insts do
-            local x, y, r = geom(spike_insts[si])
-            if x ~= nil then
-                spikes[#spikes + 1] = { x = x, y = y, r = r }
+        if root then
+            local canvas = desc(root, "Canvas")
+            if not canvas then
+                canvas = child(root, "Camera")
             end
-            si = si + 1
-        end
-
-        local bi = 1
-        while bi <= #blob_insts do
-            local inst = blob_insts[bi]
-            local x, y, r = geom(inst)
-            if x ~= nil then
-                local namel = child(inst, "NameLabel")
-                local massl = child(inst, "MassLabel")
-                local label = text_of(namel)
-                local score = digits(text_of(massl))
-                if is_mine(label, who) then
-                    own[#own + 1] = {
-                        x = x,
-                        y = y,
-                        r = r,
-                        score = score,
-                        id = nil
-                    }
+            if not canvas then
+                canvas = root
+            end
+            walk(canvas, function(inst, nm)
+                local x, y, r = geom(inst)
+                if x == nil then
+                    return
+                end
+                if nm == "Spike" then
+                    spikes[#spikes + 1] = { x = x, y = y, r = r }
+                    return
+                end
+                local label = text_of(child(inst, "NameLabel"))
+                local score = digits(text_of(child(inst, "MassLabel")))
+                if mine(inst, who) then
+                    own[#own + 1] = { x = x, y = y, r = r, score = score }
                     if score ~= nil and score > biggest then
                         biggest = score
                     end
@@ -611,12 +563,16 @@ hook.add("render", "agaric_esp", function()
                         gk = gk
                     }
                 end
-            end
-            bi = bi + 1
+            end)
         end
 
+        local now = 0
+        pcall(function()
+            now = get_tickcount()
+        end)
         local tracked = track_own(own, now)
         local own_n = #own
+        local sw, sh = screen()
 
         if esp_on then
             local i = 1
@@ -656,9 +612,6 @@ hook.add("render", "agaric_esp", function()
                     end
                 end
                 render.add_circle(vector2(c.x, c.y), c.r, col)
-                if c.score ~= nil then
-                    render.add_text(vector2(c.x - 10, c.y + c.r + 1), tostring(c.score), col, 12, true)
-                end
                 if c.gk ~= nil and count_on[c.gk] == i then
                     local tag = "x" .. tostring(counts[c.gk])
                     render.add_text(vector2(c.x - #tag * 5, c.y - c.r - 18), tag, color(1, 1, 1, 1), 16, true)
@@ -777,7 +730,4 @@ hook.add("render", "agaric_esp", function()
     end
 end)
 
-pcall(function()
-    log.notification("ESP loaded", "success")
-end)
-ready = true
+log.add("ESP loaded. Type your in-game nick. Insert hides the panel.", color(0.4, 0.8, 1, 1))
