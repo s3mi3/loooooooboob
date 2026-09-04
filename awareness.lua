@@ -4,8 +4,8 @@
 -- and as a large banner at the top of the screen.
 
 local MENU = "ESP"
-local SCAN_CAP = 900
-local SCAN_MS = 80
+local SCAN_CAP = 1400
+local SCAN_MS = 100
 local WIN_X, WIN_Y = 16, 16
 local WIN_W, WIN_H = 340, 210
 local BANNER_SIZE = 32
@@ -198,11 +198,11 @@ local function each(list, fn)
     end
 end
 
--- Do not walk into PlayerBlob/Spike (labels) or tiny food frames.
+-- Find PlayerBlob/Spike anywhere under Agaric2D. Do not walk into their labels.
 local function walk_entities(root, fn)
     local n = 0
     local function rec(inst, depth)
-        if n >= SCAN_CAP or depth > 8 or not ok(inst) then
+        if n >= SCAN_CAP or depth > 14 or not ok(inst) then
             return
         end
         local nm = inst.name
@@ -212,14 +212,6 @@ local function walk_entities(root, fn)
             return
         end
         n = n + 1
-        if nm ~= "Agaric2D" and nm ~= "Camera" and nm ~= "Canvas" then
-            local pass, size = pcall(function()
-                return inst.gui_size
-            end)
-            if pass and size ~= nil and size.x ~= nil and size.x < 8 and size.y ~= nil and size.y < 8 then
-                return
-            end
-        end
         each(kids_of(inst), function(ch)
             rec(ch, depth + 1)
         end)
@@ -366,11 +358,11 @@ local watermark = "type nick"
 local last_status = ""
 local own_state = {}
 local cached = {
-    canvas = nil,
+    root = nil,
     blobs = {},
     spikes = {},
     scan_at = 0,
-    canvas_at = 0
+    root_at = 0
 }
 
 hook.add("append_watermark", "agaric_merge", function()
@@ -482,7 +474,7 @@ local function pack_blob(inst)
     }
 end
 
-local function find_canvas()
+local function find_root()
     local pg = pgui()
     if not pg then
         return nil
@@ -491,48 +483,19 @@ local function find_canvas()
     if not root then
         root = desc(pg, "Agaric2D")
     end
-    if not root then
-        return nil
-    end
-    local canvas = desc(root, "Canvas")
-    if not canvas then
-        canvas = child(root, "Camera")
-    end
-    if not canvas then
-        canvas = root
-    end
-    return canvas
+    return root
 end
 
-local function collect_direct(parent, blobs, spikes)
-    if not ok(parent) then
-        return
-    end
-    each(kids_of(parent), function(inst)
-        local nm = inst.name
-        if nm == "PlayerBlob" then
-            blobs[#blobs + 1] = pack_blob(inst)
-        elseif nm == "Spike" then
-            spikes[#spikes + 1] = { inst = inst, x = 0, y = 0, r = 8 }
-        elseif nm == "Canvas" or nm == "Camera" then
-            collect_direct(inst, blobs, spikes)
-        end
-    end)
-end
-
-local function rescan(canvas)
+local function rescan(root)
     local blobs = {}
     local spikes = {}
-    collect_direct(canvas, blobs, spikes)
-    if #blobs == 0 and #spikes == 0 then
-        walk_entities(canvas, function(inst, nm)
-            if nm == "Spike" then
-                spikes[#spikes + 1] = { inst = inst, x = 0, y = 0, r = 8 }
-            else
-                blobs[#blobs + 1] = pack_blob(inst)
-            end
-        end)
-    end
+    walk_entities(root, function(inst, nm)
+        if nm == "Spike" then
+            spikes[#spikes + 1] = { inst = inst, x = 0, y = 0, r = 8 }
+        else
+            blobs[#blobs + 1] = pack_blob(inst)
+        end
+    end)
     cached.blobs = blobs
     cached.spikes = spikes
 end
@@ -664,14 +627,15 @@ hook.add("render", "agaric_esp", function()
         local now = get_tickcount()
         local sw, sh = screen()
 
-        if cached.canvas == nil or not ok(cached.canvas) or now - cached.canvas_at > 1000 then
-            cached.canvas = find_canvas()
-            cached.canvas_at = now
-            cached.scan_at = 0
+        if cached.root == nil or not ok(cached.root) or now - cached.root_at > 2000 then
+            cached.root = find_root()
+            cached.root_at = now
         end
-        if cached.canvas ~= nil and now - cached.scan_at >= SCAN_MS then
-            rescan(cached.canvas)
-            cached.scan_at = now
+        if cached.root ~= nil then
+            if #cached.blobs == 0 or now - cached.scan_at >= SCAN_MS then
+                rescan(cached.root)
+                cached.scan_at = now
+            end
         end
 
         local own = {}
@@ -703,7 +667,17 @@ hook.add("render", "agaric_esp", function()
                 e.ready = true
             end
             if e.ready == true then
+                    if e.mass == nil then
+                        e.mass = child(e.inst, "MassLabel")
+                    end
+                    if e.namel == nil then
+                        e.namel = child(e.inst, "NameLabel")
+                    end
                     e.score = digits(text_of(e.mass))
+                    local label = text_of(e.namel)
+                    if label ~= nil then
+                        e.label = label
+                    end
                     if is_mine(e.label, e.owner, player, who) then
                         own[#own + 1] = {
                             x = e.x,
