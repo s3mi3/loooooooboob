@@ -4,7 +4,8 @@
 -- and as a large banner at the top of the screen.
 
 local MENU = "ESP"
-local SCAN_CAP = 1400
+local SCAN_CAP = 900
+local SCAN_MS = 80
 local WIN_X, WIN_Y = 16, 16
 local WIN_W, WIN_H = 340, 210
 local BANNER_SIZE = 32
@@ -197,14 +198,28 @@ local function each(list, fn)
     end
 end
 
-local function walk(root, fn)
+-- Do not walk into PlayerBlob/Spike (labels) or tiny food frames.
+local function walk_entities(root, fn)
     local n = 0
     local function rec(inst, depth)
-        if n >= SCAN_CAP or depth > 14 or not ok(inst) then
+        if n >= SCAN_CAP or depth > 8 or not ok(inst) then
+            return
+        end
+        local nm = inst.name
+        if nm == "PlayerBlob" or nm == "Spike" then
+            n = n + 1
+            fn(inst, nm)
             return
         end
         n = n + 1
-        fn(inst)
+        if nm ~= "Agaric2D" and nm ~= "Camera" and nm ~= "Canvas" then
+            local pass, size = pcall(function()
+                return inst.gui_size
+            end)
+            if pass and size ~= nil and size.x ~= nil and size.x < 8 and size.y ~= nil and size.y < 8 then
+                return
+            end
+        end
         each(kids_of(inst), function(ch)
             rec(ch, depth + 1)
         end)
@@ -348,7 +363,15 @@ local status = menu:add_label("type blob nick, not Roblox name")
 local hidden = false
 local prev_hide = false
 local watermark = "type nick"
+local last_status = ""
 local own_state = {}
+local cached = {
+    canvas = nil,
+    blobs = {},
+    spikes = {},
+    scan_at = 0,
+    canvas_at = 0
+}
 
 hook.add("append_watermark", "agaric_merge", function()
     return watermark
@@ -407,8 +430,7 @@ end
 
 -- Typed nick is the blob NameLabel (e.g. "Superman zohan8"), not Photon/Roblox name.
 -- OwnerUid is used only when the box is empty.
-local function mine(blob, player, who)
-    local label = text_of(child(blob, "NameLabel"))
+local function is_mine(label, owner, player, who)
     if who ~= nil then
         return label ~= nil and has(label, who)
     end
@@ -416,7 +438,6 @@ local function mine(blob, player, who)
         return false
     end
     local uid = tostring(player.userid)
-    local owner = owner_of(blob)
     if owner ~= nil and owner == uid then
         return true
     end
@@ -436,9 +457,84 @@ end
 
 local function set_status(text)
     watermark = text
+    if text == last_status then
+        return
+    end
+    last_status = text
     pcall(function()
         status:set_label(text)
     end)
+end
+
+local function pack_blob(inst)
+    local namel = child(inst, "NameLabel")
+    return {
+        inst = inst,
+        mass = child(inst, "MassLabel"),
+        namel = namel,
+        id = blob_id(inst),
+        owner = owner_of(inst),
+        label = text_of(namel),
+        x = 0,
+        y = 0,
+        r = 12,
+        score = nil
+    }
+end
+
+local function find_canvas()
+    local pg = pgui()
+    if not pg then
+        return nil
+    end
+    local root = child(pg, "Agaric2D")
+    if not root then
+        root = desc(pg, "Agaric2D")
+    end
+    if not root then
+        return nil
+    end
+    local canvas = desc(root, "Canvas")
+    if not canvas then
+        canvas = child(root, "Camera")
+    end
+    if not canvas then
+        canvas = root
+    end
+    return canvas
+end
+
+local function collect_direct(parent, blobs, spikes)
+    if not ok(parent) then
+        return
+    end
+    each(kids_of(parent), function(inst)
+        local nm = inst.name
+        if nm == "PlayerBlob" then
+            blobs[#blobs + 1] = pack_blob(inst)
+        elseif nm == "Spike" then
+            spikes[#spikes + 1] = { inst = inst, x = 0, y = 0, r = 8 }
+        elseif nm == "Canvas" or nm == "Camera" then
+            collect_direct(inst, blobs, spikes)
+        end
+    end)
+end
+
+local function rescan(canvas)
+    local blobs = {}
+    local spikes = {}
+    collect_direct(canvas, blobs, spikes)
+    if #blobs == 0 and #spikes == 0 then
+        walk_entities(canvas, function(inst, nm)
+            if nm == "Spike" then
+                spikes[#spikes + 1] = { inst = inst, x = 0, y = 0, r = 8 }
+            else
+                blobs[#blobs + 1] = pack_blob(inst)
+            end
+        end)
+    end
+    cached.blobs = blobs
+    cached.spikes = spikes
 end
 
 local function draw_banner(text, col)
@@ -565,13 +661,17 @@ hook.add("render", "agaric_esp", function()
         local player = lp()
         local who = typed_name()
         local esp_on = enabled:get_value()
-        local pg = pgui()
-        local root = nil
-        if pg then
-            root = child(pg, "Agaric2D")
-            if not root then
-                root = desc(pg, "Agaric2D")
-            end
+        local now = get_tickcount()
+        local sw, sh = screen()
+
+        if cached.canvas == nil or not ok(cached.canvas) or now - cached.canvas_at > 1000 then
+            cached.canvas = find_canvas()
+            cached.canvas_at = now
+            cached.scan_at = 0
+        end
+        if cached.canvas ~= nil and now - cached.scan_at >= SCAN_MS then
+            rescan(cached.canvas)
+            cached.scan_at = now
         end
 
         local own = {}
@@ -581,69 +681,68 @@ hook.add("render", "agaric_esp", function()
         local others = {}
         local counts = {}
 
-        if root then
-            local canvas = desc(root, "Canvas")
-            if not canvas then
-                canvas = child(root, "Camera")
+        local si = 1
+        while si <= #cached.spikes do
+            local s = cached.spikes[si]
+            local x, y, r = geom(s.inst)
+            if x ~= nil then
+                s.x, s.y, s.r = x, y, r
+                spikes[#spikes + 1] = s
+            elseif s.r > 0 and s.x ~= nil then
+                spikes[#spikes + 1] = s
             end
-            if not canvas then
-                canvas = root
-            end
-            walk(canvas, function(inst)
-                local nm = inst.name
-                if nm ~= "Spike" and nm ~= "PlayerBlob" then
-                    return
-                end
-                local x, y, r = geom(inst)
-                if x == nil then
-                    return
-                end
-                if nm == "Spike" then
-                    spikes[#spikes + 1] = { x = x, y = y, r = r }
-                    return
-                end
-                local score = digits(text_of(child(inst, "MassLabel")))
-                local label = text_of(child(inst, "NameLabel"))
-                local owner = owner_of(inst)
-                if mine(inst, player, who) then
-                    own[#own + 1] = {
-                        x = x,
-                        y = y,
-                        r = r,
-                        score = score,
-                        id = blob_id(inst)
-                    }
-                    if score ~= nil and score > biggest then
-                        biggest = score
-                    end
-                    if score ~= nil and (smallest == nil or score < smallest) then
-                        smallest = score
-                    end
-                else
-                    local gk = nil
-                    if label ~= nil then
-                        gk = lower(label)
-                    elseif owner ~= nil then
-                        gk = "u" .. owner
-                    end
-                    if gk ~= nil then
-                        if counts[gk] == nil then
-                            counts[gk] = 0
-                        end
-                        counts[gk] = counts[gk] + 1
-                    end
-                    others[#others + 1] = {
-                        x = x,
-                        y = y,
-                        r = r,
-                        score = score,
-                        gk = gk
-                    }
-                end
-            end)
+            si = si + 1
         end
 
-        local now = get_tickcount()
+        local bi = 1
+        while bi <= #cached.blobs do
+            local e = cached.blobs[bi]
+            local x, y, r = geom(e.inst)
+            if x ~= nil then
+                e.x, e.y, e.r = x, y, r
+                e.ready = true
+            end
+            if e.ready == true then
+                    e.score = digits(text_of(e.mass))
+                    if is_mine(e.label, e.owner, player, who) then
+                        own[#own + 1] = {
+                            x = e.x,
+                            y = e.y,
+                            r = e.r,
+                            score = e.score,
+                            id = e.id
+                        }
+                        if e.score ~= nil and e.score > biggest then
+                            biggest = e.score
+                        end
+                        if e.score ~= nil and (smallest == nil or e.score < smallest) then
+                            smallest = e.score
+                        end
+                    else
+                        local gk = nil
+                        if e.label ~= nil then
+                            gk = lower(e.label)
+                        elseif e.owner ~= nil then
+                            gk = "u" .. e.owner
+                        end
+                        if gk ~= nil then
+                            if counts[gk] == nil then
+                                counts[gk] = 0
+                            end
+                            counts[gk] = counts[gk] + 1
+                        end
+                        others[#others + 1] = {
+                            x = e.x,
+                            y = e.y,
+                            r = e.r,
+                            score = e.score,
+                            gk = gk
+                        }
+                    end
+                end
+            bi = bi + 1
+        end
+
         local tracked = track_own(own, now)
         local own_n = #own
 
@@ -651,9 +750,26 @@ hook.add("render", "agaric_esp", function()
             local i = 1
             while i <= #spikes do
                 local s = spikes[i]
-                local pos = vector2(s.x, s.y)
-                render.add_ngon(pos, s.r, color(1, 0.08, 0.08, 1), 20, 5)
-                render.add_ngon(pos, s.r + 6, color(1, 0.2, 0.12, 0.9), 20, 2)
+                render.add_circle(vector2(s.x, s.y), s.r, color(1, 0.08, 0.08, 1))
+                i = i + 1
+            end
+            local count_on = {}
+            i = 1
+            while i <= #others do
+                local c = others[i]
+                if c.gk ~= nil and counts[c.gk] ~= nil and counts[c.gk] >= 2 then
+                    local b = count_on[c.gk]
+                    if b == nil then
+                        count_on[c.gk] = i
+                    else
+                        local o = others[b]
+                        local cs = c.score or 0
+                        local os = o.score or 0
+                        if cs > os or (cs == os and c.r > o.r) then
+                            count_on[c.gk] = i
+                        end
+                    end
+                end
                 i = i + 1
             end
             i = 1
@@ -671,12 +787,8 @@ hook.add("render", "agaric_esp", function()
                 if c.score ~= nil then
                     render.add_text(vector2(c.x - 10, c.y + c.r + 1), tostring(c.score), col, 12, true)
                 end
-                local n = 0
-                if c.gk ~= nil and counts[c.gk] ~= nil then
-                    n = counts[c.gk]
-                end
-                if n >= 2 then
-                    local tag = "x" .. tostring(n)
+                if c.gk ~= nil and count_on[c.gk] == i then
+                    local tag = "x" .. tostring(counts[c.gk])
                     render.add_text(vector2(c.x - #tag * 5, c.y - c.r - 18), tag, color(1, 1, 1, 1), 16, true)
                 end
                 i = i + 1
@@ -697,7 +809,6 @@ hook.add("render", "agaric_esp", function()
                 render.add_circle(vector2(ox, oy), orad, color(0.35, 0.85, 1, 0.95))
             end
 
-            local sw, sh = screen()
             local prey = smallest
             if prey == nil or prey <= 0 then
                 prey = biggest
