@@ -128,7 +128,21 @@ local function lower(s)
     return s
 end
 
+local function iname(inst)
+    local nm = nil
+    pcall(function()
+        nm = inst.name
+    end)
+    if nm == nil then
+        return nil
+    end
+    return tostring(nm)
+end
+
 local function geom(inst)
+    if inst == nil then
+        return nil
+    end
     local pass, pos, size = pcall(function()
         return inst.gui_position, inst.gui_size
     end)
@@ -143,6 +157,9 @@ local function geom(inst)
 end
 
 local function kids_of(inst)
+    if inst == nil then
+        return nil
+    end
     local list = nil
     pcall(function()
         list = inst:get_children()
@@ -166,7 +183,9 @@ local function each(list, fn)
     if n > 0 then
         local i = 1
         while i <= n do
-            fn(list[i])
+            pcall(function()
+                fn(list[i])
+            end)
             i = i + 1
         end
         return
@@ -175,7 +194,9 @@ local function each(list, fn)
     pcall(function()
         for _, v in pairs(list) do
             used = true
-            fn(v)
+            pcall(function()
+                fn(v)
+            end)
         end
     end)
     if used then
@@ -192,7 +213,9 @@ local function each(list, fn)
                 break
             end
         else
-            fn(v)
+            pcall(function()
+                fn(v)
+            end)
         end
         i = i + 1
     end
@@ -205,7 +228,10 @@ local function walk_entities(root, fn)
         if n >= SCAN_CAP or depth > 14 or not ok(inst) then
             return
         end
-        local nm = inst.name
+        local nm = iname(inst)
+        if nm == nil then
+            return
+        end
         if nm == "PlayerBlob" or nm == "Spike" then
             n = n + 1
             fn(inst, nm)
@@ -391,11 +417,13 @@ local function typed_name()
 end
 
 local function lp()
-    local players = game:get_service("Players")
-    if not ok(players) then
-        return nil
-    end
-    local p = players.local_player
+    local p = nil
+    pcall(function()
+        local players = game:get_service("Players")
+        if players ~= nil then
+            p = players.local_player
+        end
+    end)
     if ok(p) then
         return p
     end
@@ -429,8 +457,11 @@ local function is_mine(label, owner, player, who)
     if not player then
         return false
     end
-    local uid = tostring(player.userid)
-    if owner ~= nil and owner == uid then
+    local uid = nil
+    pcall(function()
+        uid = tostring(player.userid)
+    end)
+    if uid ~= nil and owner ~= nil and owner == uid then
         return true
     end
     return false
@@ -490,11 +521,13 @@ local function rescan(root)
     local blobs = {}
     local spikes = {}
     walk_entities(root, function(inst, nm)
-        if nm == "Spike" then
-            spikes[#spikes + 1] = { inst = inst, x = 0, y = 0, r = 8 }
-        else
-            blobs[#blobs + 1] = pack_blob(inst)
-        end
+        pcall(function()
+            if nm == "Spike" then
+                spikes[#spikes + 1] = { inst = inst, x = 0, y = 0, r = 8 }
+            else
+                blobs[#blobs + 1] = pack_blob(inst)
+            end
+        end)
     end)
     cached.blobs = blobs
     cached.spikes = spikes
@@ -623,8 +656,14 @@ hook.add("render", "agaric_esp", function()
 
         local player = lp()
         local who = typed_name()
-        local esp_on = enabled:get_value()
-        local now = get_tickcount()
+        local esp_on = true
+        pcall(function()
+            esp_on = enabled:get_value()
+        end)
+        local now = 0
+        pcall(function()
+            now = get_tickcount()
+        end)
         local sw, sh = screen()
 
         if cached.root == nil or not ok(cached.root) or now - cached.root_at > 2000 then
@@ -648,11 +687,12 @@ hook.add("render", "agaric_esp", function()
         local si = 1
         while si <= #cached.spikes do
             local s = cached.spikes[si]
-            local x, y, r = geom(s.inst)
+            local x, y, r = nil, nil, nil
+            pcall(function()
+                x, y, r = geom(s.inst)
+            end)
             if x ~= nil then
                 s.x, s.y, s.r = x, y, r
-                spikes[#spikes + 1] = s
-            elseif s.r > 0 and s.x ~= nil then
                 spikes[#spikes + 1] = s
             end
             si = si + 1
@@ -661,7 +701,10 @@ hook.add("render", "agaric_esp", function()
         local bi = 1
         while bi <= #cached.blobs do
             local e = cached.blobs[bi]
-            local x, y, r = geom(e.inst)
+            local x, y, r = nil, nil, nil
+            pcall(function()
+                x, y, r = geom(e.inst)
+            end)
             if x ~= nil then
                 e.x, e.y, e.r = x, y, r
                 e.ready = true
