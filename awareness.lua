@@ -13,6 +13,16 @@ local EAT_RATIO = 1.25
 
 local ready = false
 
+pcall(function()
+    log.add("ESP: per-piece merge, off-screen threats, cell count on others. Insert hides the panel.", color(0.4, 0.8, 1, 1))
+end)
+pcall(function()
+    hook.remove("render", "agaric_esp")
+end)
+pcall(function()
+    hook.remove("append_watermark", "agaric_merge")
+end)
+
 local function child(parent, name)
     if parent == nil then
         return nil
@@ -192,23 +202,6 @@ local function screen()
     return sx, sy
 end
 
-local function blob_id(inst)
-    local id = nil
-    pcall(function()
-        id = inst.identity
-    end)
-    if id ~= nil then
-        return "i" .. tostring(id)
-    end
-    pcall(function()
-        id = inst.address
-    end)
-    if id ~= nil then
-        return "a" .. tostring(id)
-    end
-    return nil
-end
-
 local function dist2(ax, ay, bx, by)
     local dx = ax - bx
     local dy = ay - by
@@ -274,7 +267,7 @@ local function draw_threat_arrow(ax, ay, dx, dy, label, col)
     render.add_text(vector2(tx, ty), label, col, 16, true)
 end
 
-local menu = gui.create(MENU, true)
+local menu = gui.create(MENU, false)
 menu:set_pos(WIN_X, WIN_Y)
 menu:set_size(WIN_W, WIN_H)
 
@@ -285,13 +278,8 @@ local status = menu:add_label("type blob nick, not Roblox name")
 
 local hidden = false
 local prev_hide = false
-local watermark = "type nick"
 local last_status = ""
 local own_state = {}
-
-hook.add("append_watermark", "agaric_merge", function()
-    return watermark
-end)
 
 local function typed_name()
     local t = nil
@@ -371,6 +359,9 @@ local function collect(root)
             spikes[#spikes + 1] = inst
             return
         end
+        if nm ~= "Camera" and nm ~= "Canvas" and nm ~= "World" and nm ~= "Entities" then
+            return
+        end
         each(kids_of(inst), function(ch)
             rec(ch, depth + 1)
         end)
@@ -409,7 +400,6 @@ local function set_hidden(on)
 end
 
 local function set_status(text)
-    watermark = text
     if text == last_status then
         return
     end
@@ -542,6 +532,11 @@ hook.add("render", "agaric_esp", function()
             set_hidden(not hidden)
         end
         prev_hide = down
+        if hidden ~= true then
+            pcall(function()
+                menu:set_pos(WIN_X, WIN_Y)
+            end)
+        end
 
         local who = typed_name()
         local esp_on = true
@@ -592,7 +587,7 @@ hook.add("render", "agaric_esp", function()
                         y = y,
                         r = r,
                         score = score,
-                        id = blob_id(inst)
+                        id = nil
                     }
                     if score ~= nil and score > biggest then
                         biggest = score
@@ -782,6 +777,7 @@ hook.add("render", "agaric_esp", function()
     end
 end)
 
-log.add("ESP: per-piece merge, off-screen threats, cell count on others. Insert hides the panel.", color(0.4, 0.8, 1, 1))
-log.notification("ESP loaded", "success")
+pcall(function()
+    log.notification("ESP loaded", "success")
+end)
 ready = true
