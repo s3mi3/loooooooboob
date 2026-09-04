@@ -13,23 +13,15 @@ local ARROW_MAX = 6
 local EAT_RATIO = 1.25
 
 pcall(function()
-    gui.remove(MENU)
-end)
-pcall(function()
     hook.remove("render", "agaric_esp")
 end)
 pcall(function()
     hook.remove("append_watermark", "agaric_merge")
 end)
 
+-- Do not call isvalid(): Photon logs "Invalid instance" even inside pcall.
 local function ok(inst)
-    if inst == nil then
-        return false
-    end
-    local pass, alive = pcall(function()
-        return inst:isvalid()
-    end)
-    return pass and alive == true
+    return inst ~= nil
 end
 
 local function child(parent, name)
@@ -687,13 +679,17 @@ hook.add("render", "agaric_esp", function()
         local si = 1
         while si <= #cached.spikes do
             local s = cached.spikes[si]
-            local x, y, r = nil, nil, nil
-            pcall(function()
-                x, y, r = geom(s.inst)
-            end)
-            if x ~= nil then
-                s.x, s.y, s.r = x, y, r
-                spikes[#spikes + 1] = s
+            if s.dead ~= true then
+                local x, y, r = nil, nil, nil
+                pcall(function()
+                    x, y, r = geom(s.inst)
+                end)
+                if x ~= nil then
+                    s.x, s.y, s.r = x, y, r
+                    spikes[#spikes + 1] = s
+                else
+                    s.dead = true
+                end
             end
             si = si + 1
         end
@@ -701,15 +697,20 @@ hook.add("render", "agaric_esp", function()
         local bi = 1
         while bi <= #cached.blobs do
             local e = cached.blobs[bi]
-            local x, y, r = nil, nil, nil
-            pcall(function()
-                x, y, r = geom(e.inst)
-            end)
-            if x ~= nil then
-                e.x, e.y, e.r = x, y, r
-                e.ready = true
-            end
-            if e.ready == true then
+            if e.dead ~= true then
+                local x, y, r = nil, nil, nil
+                pcall(function()
+                    x, y, r = geom(e.inst)
+                end)
+                if x ~= nil then
+                    e.x, e.y, e.r = x, y, r
+                    e.ready = true
+                else
+                    if e.ready == true then
+                        e.dead = true
+                    end
+                end
+                if e.ready == true and e.dead ~= true then
                     if e.mass == nil then
                         e.mass = child(e.inst, "MassLabel")
                     end
@@ -757,6 +758,7 @@ hook.add("render", "agaric_esp", function()
                         }
                     end
                 end
+            end
             bi = bi + 1
         end
 
