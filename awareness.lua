@@ -3,55 +3,42 @@
 -- Insert hides the panel. Merge cooldown stays on Photon's watermark
 -- and as a large banner at the top of the screen.
 
-local MENU = "ESP"
-local SCAN_CAP = 1400
-local SCAN_MS = 100
+local MENU = "Agaric"
+local SCAN_CAP = 1200
 local WIN_X, WIN_Y = 16, 16
 local WIN_W, WIN_H = 340, 210
 local BANNER_SIZE = 32
 local ARROW_MAX = 6
 local EAT_RATIO = 1.25
 
-pcall(function()
-    hook.remove("render", "agaric_esp")
-end)
-pcall(function()
-    hook.remove("append_watermark", "agaric_merge")
-end)
-
--- Do not call isvalid(): Photon logs "Invalid instance" even inside pcall.
-local function ok(inst)
-    return inst ~= nil
-end
+local ready = false
 
 local function child(parent, name)
-    if not ok(parent) then
+    if parent == nil then
         return nil
     end
     local pass, inst = pcall(function()
         return parent:find_first_child(name)
     end)
-    if pass and ok(inst) then
+    if pass and inst ~= nil then
         return inst
     end
     return nil
 end
 
-local function desc(parent, name)
-    if not ok(parent) then
+local function iname(inst)
+    local nm = nil
+    pcall(function()
+        nm = inst.name
+    end)
+    if nm == nil then
         return nil
     end
-    local pass, inst = pcall(function()
-        return parent:find_first_descendant(name)
-    end)
-    if pass and ok(inst) then
-        return inst
-    end
-    return nil
+    return tostring(nm)
 end
 
 local function text_of(inst)
-    if not ok(inst) then
+    if inst == nil then
         return nil
     end
     local pass, t = pcall(function()
@@ -120,17 +107,6 @@ local function lower(s)
     return s
 end
 
-local function iname(inst)
-    local nm = nil
-    pcall(function()
-        nm = inst.name
-    end)
-    if nm == nil then
-        return nil
-    end
-    return tostring(nm)
-end
-
 local function geom(inst)
     if inst == nil then
         return nil
@@ -156,11 +132,6 @@ local function kids_of(inst)
     pcall(function()
         list = inst:get_children()
     end)
-    if list == nil then
-        pcall(function()
-            list = inst:GetChildren()
-        end)
-    end
     return list
 end
 
@@ -182,60 +153,13 @@ local function each(list, fn)
         end
         return
     end
-    local used = false
     pcall(function()
         for _, v in pairs(list) do
-            used = true
             pcall(function()
                 fn(v)
             end)
         end
     end)
-    if used then
-        return
-    end
-    local i = 0
-    while i < 400 do
-        local v = nil
-        pcall(function()
-            v = list[i]
-        end)
-        if v == nil then
-            if i > 0 then
-                break
-            end
-        else
-            pcall(function()
-                fn(v)
-            end)
-        end
-        i = i + 1
-    end
-end
-
--- Find PlayerBlob/Spike anywhere under Agaric2D. Do not walk into their labels.
-local function walk_entities(root, fn)
-    local n = 0
-    local function rec(inst, depth)
-        if n >= SCAN_CAP or depth > 14 or not ok(inst) then
-            return
-        end
-        local nm = iname(inst)
-        if nm == nil then
-            return
-        end
-        if nm == "PlayerBlob" or nm == "Spike" then
-            n = n + 1
-            fn(inst, nm)
-            return
-        end
-        n = n + 1
-        each(kids_of(inst), function(ch)
-            rec(ch, depth + 1)
-        end)
-    end
-    rec(root, 0)
-    return n
 end
 
 local function merge_delay(score)
@@ -281,17 +205,6 @@ local function blob_id(inst)
     end)
     if id ~= nil then
         return "a" .. tostring(id)
-    end
-    return nil
-end
-
-local function owner_of(blob)
-    local owner = nil
-    pcall(function()
-        owner = blob:get_attribute("OwnerUid", 6)
-    end)
-    if owner ~= nil and tostring(owner) ~= "" then
-        return tostring(owner)
     end
     return nil
 end
@@ -375,13 +288,6 @@ local prev_hide = false
 local watermark = "type nick"
 local last_status = ""
 local own_state = {}
-local cached = {
-    root = nil,
-    blobs = {},
-    spikes = {},
-    scan_at = 0,
-    root_at = 0
-}
 
 hook.add("append_watermark", "agaric_merge", function()
     return watermark
@@ -412,51 +318,83 @@ local function lp()
     local p = nil
     pcall(function()
         local players = game:get_service("Players")
-        if players ~= nil then
-            p = players.local_player
-        end
+        p = players.local_player
     end)
-    if ok(p) then
-        return p
-    end
-    return nil
+    return p
 end
 
 local function pgui()
     local p = lp()
-    if not p then
+    if p == nil then
         return nil
     end
-    local g = child(p, "PlayerGui")
-    if g then
-        return g
+    return child(p, "PlayerGui")
+end
+
+local function find_agaric()
+    local pg = pgui()
+    if pg == nil then
+        return nil
     end
-    local pass, cls = pcall(function()
-        return p:find_first_child_class("PlayerGui")
-    end)
-    if pass and ok(cls) then
-        return cls
+    local root = child(pg, "Agaric2D")
+    if root ~= nil then
+        return root
+    end
+    local cam = child(pg, "Camera")
+    if cam ~= nil then
+        root = child(cam, "Agaric2D")
+        if root ~= nil then
+            return root
+        end
     end
     return nil
 end
 
--- Typed nick is the blob NameLabel (e.g. "Superman zohan8"), not Photon/Roblox name.
--- OwnerUid is used only when the box is empty.
-local function is_mine(label, owner, player, who)
-    if who ~= nil then
-        return label ~= nil and has(label, who)
+local function collect(root)
+    local blobs = {}
+    local spikes = {}
+    local n = 0
+    local function rec(inst, depth)
+        if n >= SCAN_CAP or depth > 10 or inst == nil then
+            return
+        end
+        local nm = iname(inst)
+        if nm == nil then
+            return
+        end
+        n = n + 1
+        if nm == "PlayerBlob" then
+            blobs[#blobs + 1] = inst
+            return
+        end
+        if nm == "Spike" then
+            spikes[#spikes + 1] = inst
+            return
+        end
+        each(kids_of(inst), function(ch)
+            rec(ch, depth + 1)
+        end)
     end
-    if not player then
+    local cam = child(root, "Camera")
+    local canvas = child(root, "Canvas")
+    if canvas == nil and cam ~= nil then
+        canvas = child(cam, "Canvas")
+    end
+    if canvas ~= nil then
+        rec(canvas, 0)
+    elseif cam ~= nil then
+        rec(cam, 0)
+    else
+        rec(root, 0)
+    end
+    return blobs, spikes
+end
+
+local function is_mine(label, who)
+    if who == nil or label == nil then
         return false
     end
-    local uid = nil
-    pcall(function()
-        uid = tostring(player.userid)
-    end)
-    if uid ~= nil and owner ~= nil and owner == uid then
-        return true
-    end
-    return false
+    return has(label, who)
 end
 
 local function set_hidden(on)
@@ -479,50 +417,6 @@ local function set_status(text)
     pcall(function()
         status:set_label(text)
     end)
-end
-
-local function pack_blob(inst)
-    local namel = child(inst, "NameLabel")
-    return {
-        inst = inst,
-        mass = child(inst, "MassLabel"),
-        namel = namel,
-        id = blob_id(inst),
-        owner = owner_of(inst),
-        label = text_of(namel),
-        x = 0,
-        y = 0,
-        r = 12,
-        score = nil
-    }
-end
-
-local function find_root()
-    local pg = pgui()
-    if not pg then
-        return nil
-    end
-    local root = child(pg, "Agaric2D")
-    if not root then
-        root = desc(pg, "Agaric2D")
-    end
-    return root
-end
-
-local function rescan(root)
-    local blobs = {}
-    local spikes = {}
-    walk_entities(root, function(inst, nm)
-        pcall(function()
-            if nm == "Spike" then
-                spikes[#spikes + 1] = { inst = inst, x = 0, y = 0, r = 8 }
-            else
-                blobs[#blobs + 1] = pack_blob(inst)
-            end
-        end)
-    end)
-    cached.blobs = blobs
-    cached.spikes = spikes
 end
 
 local function draw_banner(text, col)
@@ -636,6 +530,9 @@ local function piece_left(piece, now)
 end
 
 hook.add("render", "agaric_esp", function()
+    if ready ~= true then
+        return
+    end
     local pass, err = pcall(function()
         local down = false
         pcall(function()
@@ -646,7 +543,6 @@ hook.add("render", "agaric_esp", function()
         end
         prev_hide = down
 
-        local player = lp()
         local who = typed_name()
         local esp_on = true
         pcall(function()
@@ -658,15 +554,11 @@ hook.add("render", "agaric_esp", function()
         end)
         local sw, sh = screen()
 
-        if cached.root == nil or not ok(cached.root) or now - cached.root_at > 2000 then
-            cached.root = find_root()
-            cached.root_at = now
-        end
-        if cached.root ~= nil then
-            if #cached.blobs == 0 or now - cached.scan_at >= SCAN_MS then
-                rescan(cached.root)
-                cached.scan_at = now
-            end
+        local root = find_agaric()
+        local blob_insts = {}
+        local spike_insts = {}
+        if root ~= nil then
+            blob_insts, spike_insts = collect(root)
         end
 
         local own = {}
@@ -677,86 +569,52 @@ hook.add("render", "agaric_esp", function()
         local counts = {}
 
         local si = 1
-        while si <= #cached.spikes do
-            local s = cached.spikes[si]
-            if s.dead ~= true then
-                local x, y, r = nil, nil, nil
-                pcall(function()
-                    x, y, r = geom(s.inst)
-                end)
-                if x ~= nil then
-                    s.x, s.y, s.r = x, y, r
-                    spikes[#spikes + 1] = s
-                else
-                    s.dead = true
-                end
+        while si <= #spike_insts do
+            local x, y, r = geom(spike_insts[si])
+            if x ~= nil then
+                spikes[#spikes + 1] = { x = x, y = y, r = r }
             end
             si = si + 1
         end
 
         local bi = 1
-        while bi <= #cached.blobs do
-            local e = cached.blobs[bi]
-            if e.dead ~= true then
-                local x, y, r = nil, nil, nil
-                pcall(function()
-                    x, y, r = geom(e.inst)
-                end)
-                if x ~= nil then
-                    e.x, e.y, e.r = x, y, r
-                    e.ready = true
+        while bi <= #blob_insts do
+            local inst = blob_insts[bi]
+            local x, y, r = geom(inst)
+            if x ~= nil then
+                local namel = child(inst, "NameLabel")
+                local massl = child(inst, "MassLabel")
+                local label = text_of(namel)
+                local score = digits(text_of(massl))
+                if is_mine(label, who) then
+                    own[#own + 1] = {
+                        x = x,
+                        y = y,
+                        r = r,
+                        score = score,
+                        id = blob_id(inst)
+                    }
+                    if score ~= nil and score > biggest then
+                        biggest = score
+                    end
+                    if score ~= nil and (smallest == nil or score < smallest) then
+                        smallest = score
+                    end
                 else
-                    if e.ready == true then
-                        e.dead = true
-                    end
-                end
-                if e.ready == true and e.dead ~= true then
-                    if e.mass == nil then
-                        e.mass = child(e.inst, "MassLabel")
-                    end
-                    if e.namel == nil then
-                        e.namel = child(e.inst, "NameLabel")
-                    end
-                    e.score = digits(text_of(e.mass))
-                    local label = text_of(e.namel)
-                    if label ~= nil then
-                        e.label = label
-                    end
-                    if is_mine(e.label, e.owner, player, who) then
-                        own[#own + 1] = {
-                            x = e.x,
-                            y = e.y,
-                            r = e.r,
-                            score = e.score,
-                            id = e.id
-                        }
-                        if e.score ~= nil and e.score > biggest then
-                            biggest = e.score
+                    local gk = lower(label)
+                    if gk ~= nil then
+                        if counts[gk] == nil then
+                            counts[gk] = 0
                         end
-                        if e.score ~= nil and (smallest == nil or e.score < smallest) then
-                            smallest = e.score
-                        end
-                    else
-                        local gk = nil
-                        if e.label ~= nil then
-                            gk = lower(e.label)
-                        elseif e.owner ~= nil then
-                            gk = "u" .. e.owner
-                        end
-                        if gk ~= nil then
-                            if counts[gk] == nil then
-                                counts[gk] = 0
-                            end
-                            counts[gk] = counts[gk] + 1
-                        end
-                        others[#others + 1] = {
-                            x = e.x,
-                            y = e.y,
-                            r = e.r,
-                            score = e.score,
-                            gk = gk
-                        }
+                        counts[gk] = counts[gk] + 1
                     end
+                    others[#others + 1] = {
+                        x = x,
+                        y = y,
+                        r = r,
+                        score = score,
+                        gk = gk
+                    }
                 end
             end
             bi = bi + 1
@@ -926,3 +784,4 @@ end)
 
 log.add("ESP: per-piece merge, off-screen threats, cell count on others. Insert hides the panel.", color(0.4, 0.8, 1, 1))
 log.notification("ESP loaded", "success")
+ready = true
